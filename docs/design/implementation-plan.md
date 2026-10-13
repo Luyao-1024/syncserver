@@ -7,12 +7,16 @@
 | M0 | 需求、分层 AGENTS、架构、兼容、状态机与验收；独立 GitHub 仓库 | 文档链接/JSON/差异检查、推送 SHA |
 | M1 | Cargo crate、配置、认证、能力声明、SQLite 迁移、启动恢复框架 | 启动/认证/隔离/重启聚焦测试 |
 | M2 | 记录 CRUD、revision 条件、历史、变化索引、operation receipt | 条件并发、atomic 回滚、查询计划 |
-| M3 | query 固定快照、database/zone token、分页、兼容 aliases/batch | 分页并发、墓碑、签名/范围 fixture |
+| M3 | 跨类型 snapshotToken、query/lookup 固定快照、database/zone token、inbox 分页、兼容 aliases/batch | 分页并发、墓碑、签名/范围 fixture |
 | M4 | 上传会话、原图/缩略图角色、成对发布、流式摘要、恢复、HEAD/GET/Range | 去重、角色完整性、故障注入、正文零读取轮询 |
 | M5 | CI、systemd/容器、部署 smoke、版本发布与客户端接入规范 | exact-SHA CI、实际服务验证 |
 | C1（后续客户端） | 新 Provider、配对下载/发布、缩略图缓存导入；复用本地图库/详情 | PhotoViewer 实际入库门槛与宫格/点击验收，A15–A18 |
 
 M1–M4 共同构成 v0.1 基本服务端。任一阶段未完成时 README 保留对应未实现项，不把局部 endpoint 当作服务端完整交付。
+
+## 设计冻结入口
+
+[共享快照](../contracts/snapshots.md)、[照片字段与生命周期](../contracts/photo-records.md)、[资源接口](../contracts/assets.md)、[客户端发布屏障](client-publication.md)已给出确定选择；开发阶段验证实现，不重新默默改变契约。
 
 ## 依赖顺序
 

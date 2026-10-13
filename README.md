@@ -2,7 +2,7 @@
 
 基于 Rust 设计的独立照片同步服务端，参考 CloudKit 的记录、资源、区域和变化游标模型，为 PhotoViewer 提供增量同步。
 
-**当前阶段：设计与仓库初始化。尚无 Rust 服务端实现，也没有可运行的发布版本。** 文档中的接口、配置和性能约束均为待实现契约，不能视为已经通过验证的能力。
+**当前阶段：M0 设计契约冻结与仓库初始化。尚无 Rust 服务端实现，也没有可运行的发布版本。** 文档中的接口、配置和性能约束均为待实现契约，不能视为已经通过验证的能力。
 
 ## 目标
 
@@ -17,12 +17,14 @@
 
 1. [spac.md：需求、范围与验收](spac.md)
 2. [架构与目录](docs/design/architecture.md)
-3. [接口兼容范围](docs/design/protocol-compatibility.md)
+3. [接口兼容范围](docs/design/protocol-compatibility.md)、[共享快照](docs/contracts/snapshots.md)、[照片字段](docs/contracts/photo-records.md)、[资源接口](docs/contracts/assets.md)
 4. [数据模型](docs/design/data-model.md)与[同步状态机](docs/design/sync-state-machine.md)
 5. [完整媒体同步](docs/design/media-sync.md)、[资源生命周期](docs/design/asset-lifecycle.md)与[事务和恢复](docs/design/concurrency-recovery.md)
 6. [安全与部署](docs/design/security-operations.md)
 7. [验证计划](docs/design/verification.md)与[分阶段实施](docs/design/implementation-plan.md)
-8. [开源参考及复用边界](docs/design/open-source-reference.md)与[初始 ADR](docs/adr/0001-initial-architecture.md)、[完整下载后显示决策](docs/adr/0002-complete-media-before-display.md)
+8. [开源参考及复用边界](docs/design/open-source-reference.md)与[初始 ADR](docs/adr/0001-initial-architecture.md)、[完整下载后显示决策](docs/adr/0002-complete-media-before-display.md)、[契约冻结决策](docs/adr/0003-freeze-bootstrap-photo-and-asset-contracts.md)
+
+开发准备度与遗留闭环见[设计闭环检查](docs/design/readiness-review.md)。
 
 Agent 的规范入口是 [AGENTS.md](AGENTS.md)。[Agent.md](Agent.md) 提供各目录规范索引。
 

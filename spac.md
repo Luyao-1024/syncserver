@@ -25,6 +25,9 @@
 | S15 | 宫格与详情复用现有本地缩略图、预览和原图解码，不依赖远端资源懒下载 |
 | S16 | 复用真实本地 URI/path 与媒体模型，缩略图通过正确缓存键/尺寸导入 |
 | S17 | 照片完成进度要求两个资源与入库都完成；更新失败保留上一完整版本 |
+| S18 | 不同记录类型首次同步共享 snapshotToken/H，分类型完成不冒充清单完整 |
+| S19 | 照片一对一引用图与路径唯一性在最终事务验证；成对删除，不复用退休 ID |
+| S20 | 资源 JSON、路径、SHA-256 编码、会话状态/期限均遵守冻结契约 |
 
 ## v0.1 必须完成
 
@@ -37,7 +40,7 @@
 - 照片原图/缩略图角色、可信成对绑定及按角色请求；客户端流程见[完整媒体同步](docs/design/media-sync.md)。
 - 下载支持 HEAD、强 ETag、单段 Range；不支持多段 Range。
 - 事务恢复、重启测试、协议 fixtures 和成本计数验收。
-- [兼容矩阵](docs/design/protocol-compatibility.md)列为 v0.1 的接口与语义。
+- [兼容矩阵](docs/design/protocol-compatibility.md)及[共享快照](docs/contracts/snapshots.md)、[照片记录](docs/contracts/photo-records.md)、[资源协议](docs/contracts/assets.md)列为 v0.1 的接口与语义。
 
 ## 首版不宣称的能力
 
@@ -79,5 +82,10 @@
 | A16 | 客户端：宫格/详情命中本地缓存与原图，浏览/点击不产生对应图片的网络下载 |
 | A17 | 客户端：缓存导入兼容现有尺寸/键，watcher/scanner 不绕过配对发布门槛 |
 | A18 | 客户端：任一资源失败仍保留待办；旧版本可用，重启不发布半完成照片 |
+| A19 | 跨类型共享 H 查询间更新/删除，初次清单完整且后续 delta 不遗漏 |
+| A20 | 孤儿、拆对删除、非 atomic 内容更新、重复路径及退休 ID 均拒绝 |
+| A21 | 描述符格式/摘要编码、会话状态、过期刷新和已提交幂等结果有 fixture |
+| A22 | atomic 变化跨页中断时只持久 inbox，不用半批次发布/删除照片 |
+| A23 | 服务重启保持 scope；配置修改 zone/namespace 不静默改变现有数据 |
 
-每项状态只能由实际测试结果更新为完成。A15–A18 属于后续 PhotoViewer 接入验收，不冒称服务端仓库能替代实际 UI 验证。详细测试安排见[验证计划](docs/design/verification.md)。
+每项状态只能由实际测试结果更新为完成。A15–A18 及 A22 的客户端发布部分属于后续 PhotoViewer 接入验收，不冒称服务端仓库能替代实际 UI 验证。详细测试安排见[验证计划](docs/design/verification.md)。

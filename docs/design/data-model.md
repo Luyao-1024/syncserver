@@ -28,14 +28,15 @@
 | zones | namespace、zone_id、zone_name、owner；配置初始化 |
 | records | 当前活跃投影：zone、record_name、record_type、revision、最新 seq、字段 |
 | record_versions | 不可变版本：namespace、zone、record_name、seq、revision、完整持久字段、deleted |
-| changes | seq、namespace、zone、record_name、version 引用；与版本同事务写入 |
-| assets | namespace、asset_id、sha256、size、MIME、尺寸、内部对象位置、published 状态 |
+| namespace_counters | namespace、last_committed_seq；事务内分配，复合 seq 身份为 namespace+seq |
+| changes | namespace+seq、zone、record_name、version 引用；与版本同事务写入 |
+| assets | namespace、asset_id、sha256、size、MIME、尺寸、thumbnailValidated、内部对象位置、published 状态；没有全局照片 generation |
 | photo_bindings | namespace、photo_id、CPLAsset/CPLMaster、content generation、original/thumbnail AssetId；与照片记录同事务 |
 | upload_sessions | 会话、namespace、期望限制、已接收状态、暂存位置、到期时间 |
 | publish_intents | 持久发布意图、暂存/对象身份、摘要、状态、失败原因 |
 | operation_receipts | namespace、幂等 operation_id、请求指纹和已提交结果 |
 
-唯一性：同 namespace 内 digest/size 的已发布资产唯一；同 zone 内 recordName 唯一；operation_id 在 namespace 内唯一；同版本的变化不能重复提交。
+唯一性：同 namespace 内 digest/size 的已发布资产唯一；同 zone 内 recordName 唯一且退休后不复用；活跃 relativePath 唯一；photo_bindings 的 photo_id/master_record_name 各自唯一；operation_id 在 namespace 内唯一；同版本的变化不能重复提交。
 
 records 是查询投影，不是历史的唯一来源。删除移除/标记当前投影，同时保留含 revision 的墓碑版本与变化。
 
@@ -63,7 +64,7 @@ records 是查询投影，不是历史的唯一来源。删除移除/标记当�
 
 ## 照片完整性
 
-照片领域记录的原图和缩略图必须同 namespace、同 content generation 且 Published。一般记录不强制照片角色。content generation 改变时两角色及 CPLAsset/CPLMaster 绑定在单 zone atomic 事务中更新。
+照片记录按[冻结字段与图约束](../contracts/photo-records.md)实现一对一，generation 属于绑定/版本；不能将共享资产行限定成唯一照片或 generation。原图与缩略图必须同 namespace、同绑定 generation 且 Published；缩略图另需 thumbnailValidated。一般记录不强制照片角色。content generation 改变时两角色及 CPLAsset/CPLMaster 绑定在单 zone atomic 事务中更新。
 
 收藏/标题等元数据更新不生成新 content generation，也不重新上传资源。历史版本保留其对应角色引用，不能渲染成另一版本的缩略图。详见[完整媒体同步](media-sync.md)。
 

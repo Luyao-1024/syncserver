@@ -20,19 +20,29 @@
 
 | 配置 | 含义 |
 |---|---|
-| SYNC_BIND | 默认仅本机监听，明确配置后才对外暴露 |
-| SYNC_DATA_DIR | 数据库、对象、暂存所在根目录 |
-| SYNC_PUBLIC_BASE_URL | 签名资源 URL 的外部基址 |
+| SYNC_BIND | 默认 127.0.0.1:8790，明确配置后才对外暴露 |
+| SYNC_DATA_DIR | 必填；数据库、对象、暂存所在根目录，单进程目录锁 |
+| SYNC_PUBLIC_BASE_URL | 默认 http://127.0.0.1:8790；HTTP 只允许 loopback，其他必须 HTTPS；基址不能有用户信息、query/fragment 或路径前缀 |
 | SYNC_API_KEY_FILE | 请求认证密钥文件 |
 | SYNC_SIGNING_KEY_FILE | 跨重启稳定的签名密钥文件 |
-| SYNC_CONTAINER | 唯一开放的 CloudKit 风格 container |
+| SYNC_CONTAINER | 默认 com.apple.photos.cloud；已有数据目录不得静默更改 |
 | SYNC_ZONES | 部署初始化的 zone 清单，默认 PrimarySync |
-| SYNC_MAX_ASSET_BYTES | 单资源大小上限 |
-| SYNC_UPLOAD_CONCURRENCY | 并发上传上限 |
-| SYNC_DB_QUEUE_CAPACITY | 数据库队列上限 |
-| SYNC_JSON_BODY_LIMIT | 元数据请求大小上限 |
+| SYNC_MAX_ASSET_BYTES | 默认 536870912（512 MiB），可正数配置 |
+| SYNC_THUMBNAIL_MAX_BYTES | 默认 2097152，v0.1 不可超过 2 MiB |
+| SYNC_UPLOAD_CONCURRENCY | 默认 2，必须正整数 |
+| SYNC_DOWNLOAD_CONCURRENCY | 默认 8，必须正整数 |
+| SYNC_UPLOAD_IDLE_TIMEOUT_SECS | 默认 30，必须正整数 |
+| SYNC_UPLOAD_TOTAL_TIMEOUT_SECS | 默认 3600，必须正整数 |
+| SYNC_DB_QUEUE_CAPACITY | 默认 128，必须正整数 |
+| SYNC_JSON_BODY_LIMIT | 默认 1048576（1 MiB），必须正整数 |
 
-数值和 URL 在启动时校验。没有密钥、不可写目录或公开 URL 错误时启动失败，不降级为无认证服务。正式默认值在实现和资源测试后确定。
+数值和 URL 在启动时校验。SYNC_BIND 非 loopback 时 public base 必须为 HTTPS，不能使用默认 HTTP 回环地址充当公开配置。没有密钥、不可写目录或公开 URL 错误时启动失败，不降级为无认证服务。上述 v1 默认值已固定，后续通过测试验证并在能力声明返回实际配置；变更需同步契约。namespace 与 zone 集合在初始化后固定，顺序调整不算集合变化；不一致按 CONFIG_SCOPE_MISMATCH 拒绝启动。
+
+签名密钥文件为单行标准 Base64，解码恰好 32 随机字节；API key 为单行不透明 ASCII（32–512 字符），建议由 32 随机字节的 Base64URL 生成。Unix 文件仅当前服务用户可读写（0600），不把密钥写入例子。
+
+所有凭证采用版本化、域分离 HMAC-SHA256；payload 的 Base64URL 无 padding。MAC 绑定实际编码 payload 与种类域，校验后再解码检查语义。快照/分页/增量 token 和资产 receipt 首版没有时间到期，受 generation/签名密钥约束；上传/下载能力包含 expires，期限 15 分钟。不得用一种凭证授权另一种操作。
+
+上传 URL 到期只限制新请求；已接受的 Receiving 仍受空闲/总时长上限。已进入发布意图的操作不因凭证到期取消。会话 TTL 24 小时，不回收活跃接收或恢复中的意图。
 
 ## 部署
 

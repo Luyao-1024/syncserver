@@ -8,11 +8,13 @@ create 要求不存在；update/delete 要求 recordChangeTag 等于当前 revis
 
 同一对象的并发条件请求最多一个成功。后续冲突响应提供当时服务器的 revision，客户端重新规划；服务端不自动合并客户端业务字段。
 
+CPLAsset/CPLMaster 采用[一对一最终图规则](../contracts/photo-records.md)：成对创建/内容更新/删除，非 atomic 拆对拒绝，metadata-only 单项更新可行。退休名称不复用。
+
 v0.1 禁止 forceUpdate/forceDelete 绕过条件。atomic 批次限单 zone，任一错误回滚所有操作；非 atomic 按顺序逐项提交并返回逐项结果。
 
 ## 幂等
 
-客户端可提供 HTTP Idempotency-Key，映射为本服务 operation_id。scope + operation_id 唯一，绑定规范化请求指纹；重复请求返回原结果，不生成第二条变化。键相同内容不同必须拒绝。非 atomic 批次由批次键和索引派生逐项键，部分成功后重试保留已提交结果，不重新执行成功项。
+客户端可提供 HTTP Idempotency-Key，映射为本服务 operation_id。scope + operation_id 唯一，绑定规范化请求指纹；重复请求返回原提交域结果，重渲染短期 URL/receipt，不生成第二条变化。ASSETID 先核验数据库与证据，再归一化为稳定资产引用；请求指纹排除已验证的临时 URL/receipt，防止凭证刷新导致假冲突。键相同内容不同必须拒绝。非 atomic 批次由批次键和索引派生逐项键，部分成功后重试保留已提交结果，不重新执行成功项。
 
 不带 operation_id 的 CloudKit 风格请求仍遵守版本条件，但响应丢失后不保证返回与第一次相同的结果。客户端需读取记录核对，不能无限重复 create。
 

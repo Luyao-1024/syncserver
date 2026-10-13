@@ -6,7 +6,7 @@
 
 `assets/upload` 为指定 namespace、recordName、fieldName 创建有界上传会话，返回有限期 uploadURL。实际字节通过原生资源入口流式传输，不把图片嵌入 JSON。
 
-CloudKit 风格回包保留申请上传 URL 的结构；资源描述符在首版定义为本服务的明确子集，包含 size、SHA-256、AssetId 和签名 downloadURL。`fileChecksum` 可按适配约定编码为 SHA-256 的 Base64，同时显式带 `checksumAlgorithm=SHA256`；这不是对 Apple 私有 checksum 算法的断言。
+完整请求/响应与路径以[资源协议 v1](../contracts/assets.md)和[fixtures](../contracts/fixtures.json)为准。申请回包使用 tokens[].url；上传成功使用 singleFile；状态查询返回 sessionId/state/asset/serverErrorCode。fileChecksum 固定为 32 字节 SHA-256 的标准带 padding Base64，checksumAlgorithm=SHA256。此编码是本服务契约，不是 Apple 私有算法承诺。
 
 Apple 的 wrappingKey、referenceChecksum、加密 receipt 等未核验私有机制不伪造。客户端只支持不透明资源描述的行为时可以解析；依赖特定 Apple 加密行为的请求明确不支持。
 
@@ -42,7 +42,7 @@ Reserved → Receiving → Verified → PublishPrepared → ObjectPublished → 
 
 ## 记录提交
 
-上传成功返回绑定 namespace、AssetId、摘要和大小的服务端证据。记录 create/update 验证证据及 published 状态，在事务中写版本和变化。上传资源与保存记录是两个明确阶段。
+上传成功返回绑定 namespace、database_generation、AssetId、摘要和大小的服务端证据。照片 contentGeneration 与 sourceOriginalSHA256 属于引用关系，不放进共享资产身份。记录 create/update 验证证据及 published 状态，在事务中写版本和变化。上传资源与保存记录是两个明确阶段。
 
 上传成功但记录保存失败时，资源保留，客户端可重试记录提交。首版不做 GC，因此不会误删尚未被引用或被历史版本引用的资源。
 
@@ -56,7 +56,9 @@ Range 仅提供下载续传，不表示已经实现块差异同步。上传续�
 
 ## 幂等与回收
 
-同 operation_id 与相同请求指纹返回已提交结果；不同请求指纹返回冲突。响应丢失后客户端先查询会话结果，避免盲目重传。
+会话有效 24 小时，上传/下载能力 URL 有效 15 分钟；Reserved 可 renew，断线接收进入 Failed 并新建会话。已 Published 的正文重传拒绝，响应丢失通过状态查询恢复。
+
+同 operation_id 与相同请求指纹返回已提交域结果，重新渲染有限期 URL/receipt；不同请求指纹返回冲突。响应丢失后客户端先查询会话结果，避免盲目重传。
 
 只回收已确认过期、未发布且无进行中操作的会话暂存文件。资源 GC 和历史裁剪均不在首版范围内。数据库和资源一起备份，不能只备份 SQLite 文件。
 

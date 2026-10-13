@@ -24,7 +24,7 @@
 | `/internal/records/query/batch` | POST | 基本查询批次 | 不实现 Apple 的 HyperionIndexCountLookup 等私有计数索引 |
 | `/assets/upload` | POST | 分配上传 URL | Apple 加密/receipt 私有行为不支持，描述符见资源文档 |
 
-原生扩展：`GET /healthz`、`GET /readyz`、`GET /v1/capabilities`、签名上传/下载及会话状态路径。
+原生扩展：`GET /healthz`、`GET /readyz`、`GET /v1/capabilities`、`POST /v1/snapshots` 与固定的上传/资产路径。完整路径、JSON 与边界以[共享快照](../contracts/snapshots.md)、[照片记录](../contracts/photo-records.md)、[资源协议](../contracts/assets.md)为冻结契约。
 
 能力声明必须包含协议版本、摘要算法、可用操作、最大页数、历史保留模式与不支持项。只有实现且验证的能力才可标记为 enabled。
 
@@ -42,6 +42,8 @@
 }
 ```
 
+recordType 创建后不可改；已退休 recordName 不复用，重建使用新 ID。通用业务错误中的 RECORD_NAME_RETIRED/PATH_CONFLICT/PHOTO_PAIR_REQUIRED 是本服务扩展。
+
 同一 zone 的 recordName 稳定标识对象；文件名和路径是普通字段。`recordChangeTag` 为不透明 revision。它不是 hash，也不是可供客户端排序的数字。
 
 创建不允许覆盖已有记录。更新/删除要求当前 revision；不匹配返回 `CONFLICT` 及可用的服务端当前记录。删除返回墓碑，不自动删除资产字节。
@@ -50,7 +52,7 @@
 
 ## 照片角色扩展
 
-照片使用 CPLMaster 资源描述与 CPLAsset/masterRef 的受支持子集，并绑定 original/thumbnail 与 content generation。两记录发布和内容更新在单 zone atomic 批次中验证；不能将通用 CRUD 当作绕过照片完整性的方法。
+照片使用 CPLMaster 资源描述与 CPLAsset/masterRef 的受支持子集，并绑定 original/thumbnail 与 content generation。两记录一对一关联；发布、内容更新及删除在单 zone atomic 批次的最终图中验证。元数据更新可单独执行，跨 zone/拆对/解绑拒绝。字段、生命周期与共享资产规则见照片记录契约，不能将通用 CRUD 当作绕过照片完整性的方法。
 
 缩略图与原图 AssetId、digest、size 各自独立。预览 URL 不指向原图。具体字段扩展和下载流程见[完整媒体同步](media-sync.md)与[资源生命周期](asset-lifecycle.md)。
 
@@ -90,7 +92,7 @@
 
 `records/query` 支持 recordType 精确匹配、recordName 升序和 desiredKeys。首版不支持用户自定义 sortBy/filterBy，也不实现 `CPLAssetAndMasterByAssetDate`、startRank 等私有组合索引；相关请求明确拒绝。
 
-第一次请求捕获固定水位 H，后续 `continuationMarker` 绑定 H 和查询参数。所有页都返回 H 对应的 zone syncToken；之后客户端从 H 获取变化。因此扫描期间的创建、更新和删除不会被混合页面覆盖或漏过。
+跨类型初次同步先取得 snapshotToken，所有类型共用 H；query/lookup 接受该顶层扩展。未指定快照时第一次请求捕获自己的 H，不能假设多个独立查询水位相同。后续 `continuationMarker` 绑定 H 和查询参数。所有页都返回 H 对应的 zone syncToken；之后客户端从 H 获取变化。因此扫描期间的创建、更新和删除不会被混合页面覆盖或漏过。
 
 只从当前投影做 OFFSET 分页不符合此契约。具体过程见[同步状态机](sync-state-machine.md)。
 

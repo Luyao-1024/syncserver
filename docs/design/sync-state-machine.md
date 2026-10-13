@@ -2,12 +2,13 @@
 
 状态：待实现。关联[协议](protocol-compatibility.md)与[数据模型](data-model.md)。
 
-## 四种游标
+## 五种游标/能力
 
 1. database sync token：说明 namespace 内已检查到哪个位置，用来发现变过的 zone。
 2. zone sync token：说明某 zone 已获取到哪个变化位置。
 3. query continuation marker：继续同一固定快照和查询，不可用于变化查询。
-4. 上传/下载能力凭证：授权资源操作，不表示同步进度。
+4. snapshotToken：不同 recordType 的查询/lookup 共用固定水位，不用于推进增量。
+5. 上传/下载能力凭证：授权资源操作，不表示同步进度。
 
 签名负载包含 version、kind、database_generation、namespace、zone（若适用）、position、水位和查询指纹。使用服务器持久密钥与域分离签名；对 MAC 做恒定时间验证。客户端不能解析或自行构造受支持的 token。
 
@@ -15,14 +16,15 @@
 
 ```text
 客户端发现 zone
-  → records/query 首次请求，服务器捕获水位 H
+  → POST /v1/snapshots 一次捕获水位 H
+  → CPLAsset/CPLMaster 的 query/lookup 共享 snapshotToken
   → keyset 分页读取 H 时刻的记录状态
   → 每页返回相同 H 的 zone syncToken
   → 客户端保存清单和待办后提交 H
   → changes/zone 从 H 获取扫描期间及之后的变化
 ```
 
-第一次页的 H 与其版本查询在同一读事务中确定，后续页从历史版本重建 H。marker 绑定 desiredKeys、recordType、排序、namespace、zone。改变查询参数后不能继续用旧 marker。
+采用[共享快照契约](../contracts/snapshots.md)：创建快照的事务捕获 H，不同类型各用独立 marker，但共享 snapshotToken/H。marker 绑定 desiredKeys、recordType、排序、namespace、zone；不得把一类查询完成视为整个清单完成。没有 snapshotToken 的独立查询仍自行捕获 H，但不能直接用于跨类型完整图库 bootstrap。
 
 如果客户端中断首次扫描，它需保存已收到的页与 marker，再继续；不能把“收到第一页的 H”当作“全量清单已完整”。尚未完成的清单不得产生删除推断。
 
@@ -31,6 +33,8 @@
 ## zone 增量
 
 已追平 token 表示位置 P，下一次请求捕获水位 H。每页只读取 `P < seq <= H` 范围内的本 zone 变化，返回不可变版本，包括显式墓碑。moreComing 为 true 时，下一 token 保留 H 并推进 P。
+
+atomic 批次可跨变化页；逐页持久化 inbox 和 ingest token，但在本轮 moreComing=false 前不把暂定投影交给照片发布/删除协调。最终验证同 H 的完整图再生成资源待办。详见共享快照契约。
 
 最后一页推进到 H，转为已追平 token。没有新变化时返回原 token，records 为空。因过滤或未来历史压缩出现空页时也不能仅据 records 长度判断结束；应以 moreComing 为准。
 
