@@ -1,6 +1,6 @@
 # 数据模型
 
-状态：M1 已建立 schema v1 迁移；完整记录/资源逻辑结构待后续迁移实现。[规格](../../spac.md)与[事务约束](concurrency-recovery.md)共同约束实现。
+状态：M2 已建立 schema v2 记录/历史/变化迁移；资源存储待 M4。[规格](../../spac.md)与[事务约束](concurrency-recovery.md)共同约束实现。
 
 ## 身份与版本
 
@@ -78,4 +78,12 @@ SQLite 的路径不是外部 API 标识，禁止向客户端泄露真实数据�
 
 ## M1 物理 schema
 
-当前 schema v1 只包含 server_meta、namespaces、zones、namespace_counters 和 service_starts。SQLite application_id 标识本应用，user_version 和 server_meta.schema_version 一致；拒绝已有未知应用或新版 schema。初始化以单事务创建命名空间、zone 和 0 水位，普通重启不重建表或更新 generation。后续阶段通过新迁移补充记录/资产表，不提前以空表宣称这些语义已实现。
+M1 的 schema v1 只包含 server_meta、namespaces、zones、namespace_counters 和 service_starts。SQLite application_id 标识本应用，user_version 和 server_meta.schema_version 一致；拒绝已有未知应用或新版 schema。初始化以单事务创建命名空间、zone 和 0 水位，普通重启不重建表或更新 generation。后续阶段通过新迁移补充记录/资产表，不提前以空表宣称这些语义已实现。
+
+## M2 物理 schema
+
+schema v2 增加 records、record_versions、changes、photo_bindings 和 operation_receipts。当前记录以 deleted 墓碑保留退休名称；历史以 (namespace,seq) 唯一，当前 seq 通过延迟外键绑定对应历史。namespace_counters 在同事务推进；启动检查历史/变化最大 seq 与计数器一致。
+
+operation_receipts 主键为 (namespace,operation_id,item_index)；-1 为整个请求，nonatomic 子项使用非负索引。result_json 为空表示 Pending，只绑定指纹；每个子结果与相应记录事务一起提交，之后完整根结果稳定保存。
+
+资产表及 ASSETID 正向确认仍待 M4；当前客户端描述符不进入记录/历史/指纹成功结果。索引已用实际 HTTP 数据和 EXPLAIN 验证，证据见 [M2](m2-records.md)，不等于 M3 整体快照分页已经验收。

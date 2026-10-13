@@ -1,5 +1,7 @@
 pub(crate) mod files;
 mod migrations;
+mod records;
+pub use records::Outcome;
 
 use crate::{
     Config, Error, Result,
@@ -37,6 +39,14 @@ pub struct QueueMetrics {
 
 enum Command {
     Ping(oneshot::Sender<Result<()>>),
+    Modify(
+        crate::domain::records::Modify,
+        oneshot::Sender<Result<Outcome>>,
+    ),
+    Lookup(
+        crate::domain::records::Lookup,
+        oneshot::Sender<Result<Outcome>>,
+    ),
     #[cfg(test)]
     Hold(oneshot::Sender<()>, std::sync::mpsc::Receiver<()>),
 }
@@ -104,6 +114,12 @@ impl Store {
                 let _ = startup.send(Ok(metadata));
                 while let Some(command) = receiver.blocking_recv() {
                     match command {
+                        Command::Modify(request, reply) => {
+                            let _ = reply.send(records::modify(&mut connection, request));
+                        }
+                        Command::Lookup(request, reply) => {
+                            let _ = reply.send(records::lookup(&mut connection, request));
+                        }
                         #[cfg(test)]
                         Command::Hold(started, release) => {
                             let _ = started.send(());
@@ -174,21 +190,30 @@ impl Store {
             commands_completed: self.inner.completed.load(Ordering::Relaxed),
         }
     }
+    fn send(&self, command: Command) -> Result<()> {
+        let guard = self.inner.sender.lock().map_err(|_| Error::WorkerFailed)?;
+        let sender = guard.as_ref().ok_or(Error::Unavailable)?;
+        sender.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => {
+                self.inner.rejections.fetch_add(1, Ordering::Relaxed);
+                Error::Busy
+            }
+            mpsc::error::TrySendError::Closed(_) => Error::Unavailable,
+        })
+    }
     pub async fn ping(&self) -> Result<()> {
         let (reply, response) = oneshot::channel();
-        {
-            let guard = self.inner.sender.lock().map_err(|_| Error::WorkerFailed)?;
-            let sender = guard.as_ref().ok_or(Error::Unavailable)?;
-            sender
-                .try_send(Command::Ping(reply))
-                .map_err(|error| match error {
-                    mpsc::error::TrySendError::Full(_) => {
-                        self.inner.rejections.fetch_add(1, Ordering::Relaxed);
-                        Error::Busy
-                    }
-                    mpsc::error::TrySendError::Closed(_) => Error::Unavailable,
-                })?;
-        }
+        self.send(Command::Ping(reply))?;
+        response.await.map_err(|_| Error::WorkerFailed)?
+    }
+    pub async fn modify(&self, request: crate::domain::records::Modify) -> Result<Outcome> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::Modify(request, reply))?;
+        response.await.map_err(|_| Error::WorkerFailed)?
+    }
+    pub async fn lookup(&self, request: crate::domain::records::Lookup) -> Result<Outcome> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::Lookup(request, reply))?;
         response.await.map_err(|_| Error::WorkerFailed)?
     }
     pub async fn shutdown(&self) -> Result<()> {

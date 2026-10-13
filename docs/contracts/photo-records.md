@@ -1,6 +1,6 @@
 # 照片记录、字段与引用生命周期 v1
 
-状态：设计已冻结，领域/数据库实现和验证待 M2。JSON 样例见[fixtures](fixtures.json)中的 photoPair 与 createPhotoRequest。
+状态：设计已冻结，M2 已实现最终图规则与元数据约束；真实资产正向绑定/发布待 M4。JSON 样例见[fixtures](fixtures.json)中的 photoPair 与 createPhotoRequest。
 
 ## 一对一身份
 
@@ -29,7 +29,7 @@ recordName 不可变；保留过墓碑的名称不能用于 create，返回 RECO
 
 未知非保留字段可按通用 CloudKit 字段规则保存，不改变引用和权限；保留字段不能删除或改错类型。recordType 首版不可改；测试未来需要类型变化时另行扩展契约。
 
-relativePath 不能为空、绝对路径、含空段、`.`/`..`、反斜线或 NUL；不能进入本服务/客户端保留工作目录。保留原有 Unicode，不隐式重命名。重命名只改此字段，冲突返回 PATH_CONFLICT，不能覆盖另一照片。
+relativePath 不能为空、绝对路径、含空段、`.`/`..`、反斜线或 NUL；不能进入本服务/客户端保留工作目录。v1 保留首段 `.syncserver`、`.photoviewer-sync`、`.sync-staging`。保留原有 Unicode，不隐式重命名。重命名只改此字段，冲突返回 PATH_CONFLICT，不能覆盖另一照片。
 
 ## 资产身份与 generation
 
@@ -63,3 +63,7 @@ photo_bindings 必须有唯一键 `(namespace,zone,photo_id)` 和 `(namespace,zo
 ## 验收
 
 创建/删除顺序；孤儿/跨 zone；不同 revision 并发；非 atomic 拆对；重复路径；退休名称；metadata-only 不增加资源；相同资产跨 generation 去重；共享资产删除后其他照片仍可下载。
+
+## M2 验证边界
+
+纯图测试和真实 HTTP 拆对拒绝已验证；服务端不接纳客户端自称已发布的 ASSETID 描述。M2 尚无可信资源来源，完整照片创建返回 UNSUPPORTED_CAPABILITY 而非写入半成品；真实资源确认、持久引用归一化及正向配对发布验收留到 M4。

@@ -171,7 +171,7 @@ async fn unknown_schema_and_corrupt_metadata_fail_closed() {
     ));
     {
         let db = rusqlite::Connection::open(&path).unwrap();
-        db.pragma_update(None, "user_version", 1).unwrap();
+        db.pragma_update(None, "user_version", 2).unwrap();
         db.execute("UPDATE server_meta SET database_generation='corrupt'", [])
             .unwrap();
     }
@@ -193,7 +193,11 @@ async fn startup_does_not_scan_or_hash_managed_objects() {
         .unwrap();
     // An unreadable synthetic object makes accidental body access observable.
     let object = root.path().join("data/objects/unreadable-test-object");
-    fs::write(&object, b"synthetic content that must never be read by M1").unwrap();
+    fs::write(
+        &object,
+        b"synthetic content that must never be read during metadata startup",
+    )
+    .unwrap();
     fs::set_permissions(&object, fs::Permissions::from_mode(0o000)).unwrap();
     let server = Server::open(config).await.unwrap();
     assert_eq!(server.metadata().recovery.asset_bytes_read, 0);

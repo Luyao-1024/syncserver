@@ -31,14 +31,14 @@ impl ApiError {
         Self::new(
             StatusCode::BAD_REQUEST,
             "BAD_REQUEST",
-            "Expected an empty JSON object",
+            "Invalid JSON request or unsupported request parameter",
         )
     }
     pub fn unsupported() -> Self {
         Self::new(
             StatusCode::NOT_IMPLEMENTED,
             "UNSUPPORTED_CAPABILITY",
-            "This capability is not implemented in M1",
+            "This capability is not implemented in M2",
         )
     }
 }
@@ -86,5 +86,15 @@ impl From<Error> for ApiError {
                 "Database operation failed",
             ),
         }
+    }
+}
+
+impl From<crate::domain::records::Failure> for ApiError {
+    fn from(error: crate::domain::records::Failure) -> Self {
+        Self::new(
+            StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            error.code,
+            error.reason,
+        )
     }
 }

@@ -1,3 +1,5 @@
+pub mod photos;
+pub mod records;
 use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

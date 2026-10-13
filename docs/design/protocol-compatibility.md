@@ -1,6 +1,6 @@
 # CloudKit 风格接口兼容契约
 
-状态：M1 已实现 zone 列表与原生基础接口；其余均为计划实现的子集。不能用于宣称完整 iCloud 或 CloudKit 兼容。上位规格：[spac.md](../../spac.md)。
+状态：M2 已实现 zone 列表、元数据 modify/当前 lookup 与基础接口；快照/变化/资产仍为计划子集。不能用于宣称完整 iCloud 或 CloudKit 兼容。上位规格：[spac.md](../../spac.md)。
 
 ## 范围与路径
 
@@ -174,3 +174,9 @@ CloudKit 风格业务错误使用 `serverErrorCode` 和 `reason`；逐项操作�
 错误格式为 serverErrorCode/reason；未认证返回 401 AUTHENTICATION_REQUIRED，其他 container 返回 404 UNKNOWN_ITEM，development/public/shared 及尚未实现的已知接口返回 501 UNSUPPORTED_CAPABILITY。未知接口返回 404，zone 列表错误方法返回 405。所有响应附带 no-store、x-request-id 和 nosniff。
 
 M1 能力声明逐项列出 false 的快照/记录/变化/资源能力；不生成 cursor、receipt 或资源签名 URL。协议和资源 JSON fixture 的文档检查仍不构成其接口已实现的证据。
+
+## M2 实际支持状态
+
+新增 records/modify 与 records/lookup，统一接受 JSON/text/plain 并拒绝重复 JSON 键。支持字段、补丁语义、条件与错误、nonatomic 幂等恢复和固定限额以[记录契约](../contracts/records.md)为准。能力声明 recordCrud=true，并返回支持字段类型、协议版本/算法/保留模式和记录限额。
+
+snapshots/incrementalChanges/assetUpload/assetDownload/photoPublication=false。records/query、带 snapshotToken 的 lookup 和资源正向发布未开放；M2 不将当前读取冒充跨请求一致清单。M1 小节是上一阶段支持范围的历史记录，不应作为当前 capability 列表。

@@ -1,4 +1,6 @@
 mod error;
+mod json;
+mod records;
 
 use crate::{Config, credentials::Credentials, store::Store};
 use axum::{
@@ -151,18 +153,23 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
 
 async fn capabilities(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
-        "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M1",
+        "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M2",
         "namespace": state.config.namespace, "zones": state.config.zones,
         "publicBaseURL": state.config.public_base_url.as_str(),
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,
         "capabilities": {
-            "zoneListing": true, "recordCrud": false, "snapshots": false,
+            "zoneListing": true, "recordCrud": true, "snapshots": false,
             "incrementalChanges": false, "assetUpload": false, "assetDownload": false,
-            "appleAuthentication": false, "sharing": false, "uploadResume": false
+            "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": false
         },
         // Asset/upload limits are configured reservations for M4, not enabled APIs.
         "limits": state.config.limits,
+        "protocolVersion": 1, "checksumAlgorithm": "SHA256", "historyRetention": "all",
+        "recordFieldTypes": ["STRING","INT64","DOUBLE","TIMESTAMP","BYTES","REFERENCE",
+            "STRING_LIST","INT64_LIST","DOUBLE_LIST","TIMESTAMP_LIST","BYTES_LIST","REFERENCE_LIST"],
+        "recordLimits": { "maxOperations": crate::domain::records::MAX_OPERATIONS,
+            "maxRecordBytes": crate::domain::records::MAX_RECORD_BYTES, "maxResultBytes": crate::domain::records::MAX_RESULT_BYTES },
         "recovery": state.store.metadata().recovery,
         "metrics": { "requests": state.requests.load(Ordering::Relaxed),
             "requestRejections": state.rejected.load(Ordering::Relaxed),
@@ -181,7 +188,10 @@ async fn cloudkit(
     if environment != "production" || database != "private" {
         return ApiError::unsupported().into_response();
     }
-    if operation != "zones/list" {
+    if !matches!(
+        operation.as_str(),
+        "zones/list" | "records/modify" | "records/lookup"
+    ) {
         return if matches!(
             operation.as_str(),
             "records/query"
@@ -192,6 +202,7 @@ async fn cloudkit(
                 | "changes/zone"
                 | "zones/changes"
                 | "assets/upload"
+                | "internal/records/query/batch"
         ) {
             ApiError::unsupported().into_response()
         } else {
@@ -202,7 +213,7 @@ async fn cloudkit(
         let mut response = ApiError::new(
             StatusCode::METHOD_NOT_ALLOWED,
             "METHOD_NOT_ALLOWED",
-            "Use POST for zones/list",
+            "Use POST for record and zone operations",
         )
         .into_response();
         response
@@ -210,6 +221,40 @@ async fn cloudkit(
             .insert(header::ALLOW, "POST".parse().unwrap());
         return response;
     }
+    if request.uri().query().is_some() {
+        return ApiError::bad_request().into_response();
+    }
+    let key = if operation == "records/modify" {
+        match records::idempotency_key(request.headers()) {
+            Ok(key) => key,
+            Err(error) => return error.into_response(),
+        }
+    } else {
+        None
+    };
+    let value = match read_json(request, state.config.limits.json_body_limit).await {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    if operation == "records/modify" {
+        return records::modify(&state, value, key).await;
+    }
+    if operation == "records/lookup" {
+        return records::lookup(&state, value).await;
+    }
+    if !value.as_object().is_some_and(|map| map.is_empty()) {
+        return ApiError::bad_request().into_response();
+    }
+    let zones: Vec<_> = state
+        .config
+        .zones
+        .iter()
+        .map(|name| json!({"zoneID":{"zoneName":name, "ownerRecordName":"_defaultOwner"}}))
+        .collect();
+    Json(json!({"zones":zones})).into_response()
+}
+
+async fn read_json(request: Request, limit: usize) -> std::result::Result<Value, ApiError> {
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -225,51 +270,39 @@ async fn cloudkit(
         content_type.as_deref(),
         Some("application/json" | "text/plain")
     ) {
-        return ApiError::new(
+        return Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "UNSUPPORTED_MEDIA_TYPE",
             "Use application/json or text/plain containing JSON",
-        )
-        .into_response();
+        ));
     }
     let bytes = match tokio::time::timeout(
         Duration::from_secs(30),
-        to_bytes(request.into_body(), state.config.limits.json_body_limit),
+        to_bytes(request.into_body(), limit),
     )
     .await
     {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(_)) => {
-            return ApiError::new(
+            return Err(ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "LIMIT_EXCEEDED",
                 "JSON body limit exceeded or body could not be read",
-            )
-            .into_response();
+            ));
         }
         Err(_) => {
-            return ApiError::new(
+            return Err(ApiError::new(
                 StatusCode::REQUEST_TIMEOUT,
                 "REQUEST_TIMEOUT",
                 "JSON body read timed out",
-            )
-            .into_response();
+            ));
         }
     };
-    let value: Value = match serde_json::from_slice(&bytes) {
+    let value: Value = match json::parse(&bytes) {
         Ok(value) => value,
-        Err(_) => return ApiError::bad_request().into_response(),
+        Err(_) => return Err(ApiError::bad_request()),
     };
-    if !value.as_object().is_some_and(|map| map.is_empty()) {
-        return ApiError::bad_request().into_response();
-    }
-    let zones: Vec<_> = state
-        .config
-        .zones
-        .iter()
-        .map(|name| json!({"zoneID":{"zoneName":name, "ownerRecordName":"_defaultOwner"}}))
-        .collect();
-    Json(json!({"zones":zones})).into_response()
+    Ok(value)
 }
 
 async fn native_unsupported(Path(operation): Path<String>) -> Response {

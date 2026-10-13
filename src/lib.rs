@@ -1,5 +1,5 @@
-//! M1 startup, authentication and durable metadata foundation. Record/asset APIs
-//! are deliberately advertised as unavailable until subsequent milestones.
+//! M2 record transactions on the durable M1 startup and metadata foundation.
+//! Snapshot/change feeds and trusted asset publication remain later milestones.
 mod api;
 mod config;
 mod credentials;

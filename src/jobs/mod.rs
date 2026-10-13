@@ -12,7 +12,7 @@ pub struct RecoveryReport {
     pub asset_bytes_hashed: u64,
 }
 
-// M1 recovery only checks metadata and settles interrupted starts. M4 will add
+// Metadata recovery checks the database and settles interrupted starts. M4 will add
 // durable asset intents here; never scan/re-hash all published objects.
 pub(crate) fn recover(connection: &mut Connection) -> Result<RecoveryReport> {
     let integrity: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;

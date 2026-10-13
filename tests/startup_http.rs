@@ -53,12 +53,12 @@ async fn health_readiness_authentication_and_actual_capabilities() {
     assert_eq!(response.headers()["cache-control"], "no-store");
     assert!(response.headers().contains_key("x-request-id"));
     let value: Value = response.json().await.unwrap();
-    assert_eq!(value["stage"], "M1");
+    assert_eq!(value["stage"], "M2");
     assert_eq!(value["namespace"]["database"], "private");
     assert_eq!(value["zones"], json!(["PrimarySync"]));
     assert_eq!(value["capabilities"]["zoneListing"], true);
+    assert_eq!(value["capabilities"]["recordCrud"], true);
     for capability in [
-        "recordCrud",
         "snapshots",
         "incrementalChanges",
         "assetUpload",
@@ -119,6 +119,11 @@ async fn cloudkit_scope_json_content_types_and_explicit_unsupported_errors() {
         ),
         (
             "com.apple.photos.cloud/production/private/records/query",
+            "UNSUPPORTED_CAPABILITY",
+            501,
+        ),
+        (
+            "com.apple.photos.cloud/production/private/internal/records/query/batch",
             "UNSUPPORTED_CAPABILITY",
             501,
         ),
