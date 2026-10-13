@@ -131,7 +131,8 @@ def main():
     parser.add_argument("--docs-only", action="store_true", help="also reject Rust implementation during M0")
     args = parser.parse_args()
     links = examples = 0
-    docs = sorted(ROOT.rglob('*.md'))
+    docs = sorted(path for path in ROOT.rglob('*.md')
+                  if not set(path.relative_to(ROOT).parts) & {'target', '.git', 'local-run'})
     for path in docs:
         text = path.read_text(encoding='utf-8')
         for target in re.findall(r'\[[^\]]*\]\(([^\n)]+)\)', text):

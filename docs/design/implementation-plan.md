@@ -1,11 +1,11 @@
 # 实施计划与阶段门槛
 
-状态：M0 文档基线已建立；M1–M5 与 C1 待实现。不要在设计提交中加入 Rust 功能代码。
+状态：M0 文档基线与 M1 基础已建立；M2–M5 与 C1 待实现。M1 实现与验证见 [M1 基础](m1-foundation.md)。
 
 | 阶段 | 交付 | 完成证据 |
 |---|---|---|
 | M0 | 需求、分层 AGENTS、架构、兼容、状态机与验收；独立 GitHub 仓库 | 文档链接/JSON/差异检查、推送 SHA |
-| M1 | Cargo crate、配置、认证、能力声明、SQLite 迁移、启动恢复框架 | 启动/认证/隔离/重启聚焦测试 |
+| M1（已实现） | Cargo crate、配置、认证、能力声明、SQLite 迁移、启动恢复框架 | 实际 HTTP、范围固定、权限、队列、SIGKILL/SIGTERM 重启测试；见 M1 基础 |
 | M2 | 记录 CRUD、revision 条件、历史、变化索引、operation receipt | 条件并发、atomic 回滚、查询计划 |
 | M3 | 跨类型 snapshotToken、query/lookup 固定快照、database/zone token、inbox 分页、兼容 aliases/batch | 分页并发、墓碑、签名/范围 fixture |
 | M4 | 上传会话、原图/缩略图角色、成对发布、流式摘要、恢复、HEAD/GET/Range | 去重、角色完整性、故障注入、正文零读取轮询 |

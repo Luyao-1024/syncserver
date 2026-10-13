@@ -8,3 +8,4 @@
 *.key
 *.pem
 *.log
+/local-run/

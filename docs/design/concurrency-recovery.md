@@ -1,6 +1,6 @@
 # 条件写入、事务和恢复
 
-状态：待实现。SQLite 事务和文件发布必须通过持久意图衔接。
+状态：M1 已实现迁移、范围检查、启动登记和有界单写入者；下述记录事务/资产恢复待 M2/M4。SQLite 事务和文件发布必须通过持久意图衔接。
 
 ## 条件命令
 
@@ -51,3 +51,11 @@ v0.1 禁止 forceUpdate/forceDelete 绕过条件。atomic 批次限单 zone，�
 ## 外部写入
 
 受管理对象目录只允许服务端写入。直接编辑/删除对象不属于支持路径；后续外部导入器必须先稳定观察内容，再通过正式发布和记录接口入库。未受控的外部写入不能靠 mtime 缓存承诺强一致。
+
+## M1 启动框架
+
+`service_starts` 在独立事务中记录 Recovering，然后在完成元数据 quick_check/外键检查后进入 Ready。重启将旧 Recovering/Ready 登记为 Interrupted；正常关闭排空数据库命令，写入 Stopped 并执行 WAL checkpoint。只有初始化完成才建立可就绪的应用状态，启动失败不会开放 HTTP 监听。
+
+同目录锁由数据库线程持有至连接关闭。命令队列满直接返回 SERVER_BUSY，不创建无界等待发送者。请求取消不会撤销已经接受的数据库命令；关闭原子停止提交，再执行已接受命令并等待线程退出。并发 shutdown 调用等待同一次排空完成。
+
+M1 没有 upload_sessions、publish_intents 或 Published 资产；恢复仅检查元数据，不读取 objects/staging 的内容。实际发布窗口恢复将在 M4 实现，不能用启动登记测试替代。

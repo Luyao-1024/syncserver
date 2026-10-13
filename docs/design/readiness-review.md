@@ -1,6 +1,6 @@
 # 开发准备度与设计闭环
 
-日期：2026-10-13。状态：M0 设计阻塞项已补齐；M1 可以开始。没有 Rust 服务端实现、HTTP 实测或发布证据，A01–A23 的实现验收仍待后续阶段。
+日期：2026-10-13。状态：M0 设计阻塞项已补齐；M1 基础已实现并有本地 HTTP/进程测试，详见 [M1 基础](m1-foundation.md)。A01–A23 的完整同步实现验收仍待后续阶段。
 
 | 问题 | 固定决策 | 设计状态 | 实现阶段 |
 |---|---|---|---|
@@ -17,7 +17,7 @@
 - [合成 JSON 与 PNG fixtures](../contracts/fixtures.json)
 - [客户端发布](client-publication.md)
 - [ADR 0003](../adr/0003-freeze-bootstrap-photo-and-asset-contracts.md)
-- 文档检查命令：`python tools/check-docs.py --docs-only`，仅检查链接、JSON 与 fixture 一致性，不能替代服务测试。
+- 文档检查命令：`python tools/check-docs.py`，仅检查链接、JSON 与 fixture 一致性，不能替代服务测试。
 
 ## 开发中需要验证的事情
 
@@ -25,6 +25,6 @@ SQL 查询计划、真实并发、哈希/读取计数、故障恢复、尺寸解
 
 多账户、Apple 私有索引/登录、上传续传、历史裁剪、资源 GC、跨实例部署维持暂缓；不在开发过程中悄悄扩围。
 
-## 进入 M1
+## M1 后续推进
 
-创建 Rust crate，选择并锁定依赖，实现固定配置、认证、scope 校验、健康/就绪与能力声明、数据库执行器和迁移基础。按[实施计划](implementation-plan.md)推进 M2–M5；本轮仅冻结契约。
+M1 已建立 Rust crate、锁定依赖、固定配置/认证/scope/健康/就绪/能力声明及数据库执行器和迁移基础。下一阶段按[实施计划](implementation-plan.md)推进 M2 的记录模型和事务；M1 不替代 M2–M5 或 C1 的验证。

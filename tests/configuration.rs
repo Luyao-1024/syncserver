@@ -1,0 +1,137 @@
+#[allow(dead_code)] // This test crate only uses the configuration fixtures.
+mod common;
+use std::{
+    fs,
+    os::unix::fs::{PermissionsExt, symlink},
+};
+use syncserver::{Config, Error, Server};
+
+fn pairs() -> Vec<(&'static str, String)> {
+    vec![
+        ("SYNC_DATA_DIR", "/unused/test".into()),
+        ("SYNC_API_KEY_FILE", "/unused/api".into()),
+        ("SYNC_SIGNING_KEY_FILE", "/unused/signing".into()),
+    ]
+}
+
+#[test]
+fn configuration_rejects_unsafe_urls_ranges_names_and_missing_keys() {
+    assert!(Config::from_pairs(Vec::<(String, String)>::new()).is_err());
+    for (key, invalid) in [
+        ("SYNC_BIND", "example.org:8790"),
+        ("SYNC_BIND", "127.0.0.1:65536"),
+        ("SYNC_PUBLIC_BASE_URL", "http://example.org"),
+        ("SYNC_PUBLIC_BASE_URL", "http://localhost:8790"),
+        ("SYNC_PUBLIC_BASE_URL", "https://example.org/prefix"),
+        ("SYNC_PUBLIC_BASE_URL", "https://user:secret@example.org"),
+        ("SYNC_PUBLIC_BASE_URL", "https://example.org?token=secret"),
+        ("SYNC_PUBLIC_BASE_URL", "https://example.org#fragment"),
+        ("SYNC_PUBLIC_BASE_URL", "ftp://example.org"),
+        ("SYNC_PUBLIC_BASE_URL", "https://example.org:0"),
+        ("SYNC_CONTAINER", "../escape"),
+        ("SYNC_CONTAINER", ""),
+        ("SYNC_ZONES", "A,A"),
+        ("SYNC_ZONES", "A,"),
+        ("SYNC_ZONES", "../bad"),
+        ("SYNC_ZONES", ""),
+        ("SYNC_ZONES", " A"),
+        ("SYNC_MAX_ASSET_BYTES", "0"),
+        ("SYNC_MAX_ASSET_BYTES", "9223372036854775808"),
+        ("SYNC_THUMBNAIL_MAX_BYTES", "2097153"),
+        ("SYNC_UPLOAD_CONCURRENCY", "0"),
+        ("SYNC_DOWNLOAD_CONCURRENCY", "-1"),
+        ("SYNC_UPLOAD_IDLE_TIMEOUT_SECS", "3601"),
+        ("SYNC_UPLOAD_TOTAL_TIMEOUT_SECS", "0"),
+        ("SYNC_DB_QUEUE_CAPACITY", "0"),
+        ("SYNC_JSON_BODY_LIMIT", "1.5"),
+        ("SYNC_JSON_BODY_LIMIT", "18446744073709551616"),
+        ("SYNC_DB_QUEUE_CAPACITY", "+1"),
+    ] {
+        let mut input = pairs();
+        input.push((key, invalid.into()));
+        let error = Config::from_pairs(input).unwrap_err();
+        assert!(matches!(error, Error::Config(_)), "{key}");
+        assert!(!error.to_string().contains("secret"));
+    }
+    let mut input = pairs();
+    input.push(("SYNC_BIND", "0.0.0.0:8790".into()));
+    assert!(Config::from_pairs(input.clone()).is_err());
+    input.push(("SYNC_PUBLIC_BASE_URL", "https://sync.example.org".into()));
+    assert!(Config::from_pairs(input).is_ok());
+    let mut input = pairs();
+    input.push(("SYNC_PUBLIC_BASE_URL", "http://[::1]:8790".into()));
+    assert!(Config::from_pairs(input).is_ok());
+    let mut input = pairs();
+    input.push(("SYNC_DATA_DIR", "/duplicate".into()));
+    assert!(Config::from_pairs(input).is_err());
+}
+
+#[tokio::test]
+async fn private_credentials_are_required_and_never_leaked_in_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let config = common::config(root.path());
+    let api = root.path().join("api.key");
+    fs::set_permissions(&api, fs::Permissions::from_mode(0o644)).unwrap();
+    let error = Server::open(config.clone()).await.err().unwrap();
+    assert!(matches!(error, Error::Config(_)));
+    assert!(!error.to_string().contains(common::API_KEY));
+    assert!(!root.path().join("data").exists());
+    fs::set_permissions(&api, fs::Permissions::from_mode(0o600)).unwrap();
+    for invalid in [
+        "short",
+        "one-line\ntwo-lines",
+        " spaces-must-not-be-accepted-0123456789",
+        "non-ASCII-密钥-01234567890123456789012",
+    ] {
+        fs::write(&api, invalid).unwrap();
+        assert!(Server::open(config.clone()).await.is_err());
+    }
+    fs::write(&api, common::API_KEY).unwrap();
+    let signing = root.path().join("signing.key");
+    for invalid in [
+        "not-base64",
+        "AQ==",
+        "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+        "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n\n",
+    ] {
+        fs::write(&signing, invalid).unwrap();
+        assert!(Server::open(config.clone()).await.is_err());
+    }
+    fs::remove_file(&signing).unwrap();
+    assert!(Server::open(config.clone()).await.is_err());
+    fs::write(
+        root.path().join("outside"),
+        "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    )
+    .unwrap();
+    symlink(root.path().join("outside"), &signing).unwrap();
+    assert!(Server::open(config).await.is_err());
+}
+
+#[tokio::test]
+async fn symlink_and_shared_data_directories_are_rejected_without_touching_targets() {
+    let root = tempfile::tempdir().unwrap();
+    let config = common::config(root.path());
+    let outside = root.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o700)).unwrap();
+    symlink(&outside, root.path().join("data")).unwrap();
+    assert!(Server::open(config.clone()).await.is_err());
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    fs::remove_file(root.path().join("data")).unwrap();
+    fs::create_dir(root.path().join("data")).unwrap();
+    fs::set_permissions(root.path().join("data"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(Server::open(config.clone()).await.is_err());
+    fs::set_permissions(root.path().join("data"), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(outside.join("sentinel"), b"do not modify").unwrap();
+    symlink(
+        outside.join("sentinel"),
+        root.path().join("data/metadata.sqlite"),
+    )
+    .unwrap();
+    assert!(Server::open(config).await.is_err());
+    assert_eq!(
+        fs::read(outside.join("sentinel")).unwrap(),
+        b"do not modify"
+    );
+}

@@ -1,6 +1,6 @@
 # 安全、配置与部署
 
-状态：部署契约，尚无实际服务或配置文件。
+状态：M1 已实现配置、文件权限、Bearer 认证与数据目录锁；部署样例和同步凭证发行仍待后续阶段。
 
 ## 首版身份
 
@@ -16,13 +16,13 @@
 
 服务端 SHA-256 证明实际字节身份，不自动证明客户端有权访问另一个 namespace 的资产。
 
-## 计划配置
+## 配置
 
 | 配置 | 含义 |
 |---|---|
 | SYNC_BIND | 默认 127.0.0.1:8790，明确配置后才对外暴露 |
 | SYNC_DATA_DIR | 必填；数据库、对象、暂存所在根目录，单进程目录锁 |
-| SYNC_PUBLIC_BASE_URL | 默认 http://127.0.0.1:8790；HTTP 只允许 loopback，其他必须 HTTPS；基址不能有用户信息、query/fragment 或路径前缀 |
+| SYNC_PUBLIC_BASE_URL | 默认 http://127.0.0.1:8790；HTTP 只允许 literal loopback IP（不接受 DNS 主机名），其他必须 HTTPS；基址不能有用户信息、query/fragment 或路径前缀 |
 | SYNC_API_KEY_FILE | 请求认证密钥文件 |
 | SYNC_SIGNING_KEY_FILE | 跨重启稳定的签名密钥文件 |
 | SYNC_CONTAINER | 默认 com.apple.photos.cloud；已有数据目录不得静默更改 |
@@ -36,7 +36,7 @@
 | SYNC_DB_QUEUE_CAPACITY | 默认 128，必须正整数 |
 | SYNC_JSON_BODY_LIMIT | 默认 1048576（1 MiB），必须正整数 |
 
-数值和 URL 在启动时校验。SYNC_BIND 非 loopback 时 public base 必须为 HTTPS，不能使用默认 HTTP 回环地址充当公开配置。没有密钥、不可写目录或公开 URL 错误时启动失败，不降级为无认证服务。上述 v1 默认值已固定，后续通过测试验证并在能力声明返回实际配置；变更需同步契约。namespace 与 zone 集合在初始化后固定，顺序调整不算集合变化；不一致按 CONFIG_SCOPE_MISMATCH 拒绝启动。
+数值和 URL 在启动时校验。SYNC_BIND 非 loopback 时 public base 必须为 HTTPS，不能使用默认 HTTP 回环地址充当公开配置。没有密钥、不可写目录或公开 URL 错误时启动失败，不降级为无认证服务。上述 v1 默认值已固定，M1 配置测试和能力声明返回实际配置；变更需同步契约。namespace 与 zone 集合在初始化后固定，顺序调整不算集合变化；不一致按 CONFIG_SCOPE_MISMATCH 拒绝启动。
 
 签名密钥文件为单行标准 Base64，解码恰好 32 随机字节；API key 为单行不透明 ASCII（32–512 字符），建议由 32 随机字节的 Base64URL 生成。Unix 文件仅当前服务用户可读写（0600），不把密钥写入例子。
 
@@ -61,3 +61,11 @@ systemd 使用独立用户、受限目录和明确的关闭超时。容器只挂
 日志包含 request_id、范围和错误类别，不包含密钥、原始私密字段或完整能力 URL。路径和 recordName 可能包含个人信息，默认避免输出完整值。
 
 健康、就绪、队列长度、上传字节、哈希字节、变化页数和恢复失败计数须可观测。v0.1 不把 metrics 地址当作同步 API。
+
+## M1 的实现边界
+
+M1 的文件权限要求为数据目录 0700、凭证及管理文件 0600，服务用户拥有，拒绝符号链接和文件硬链接。配置文件中的队列/并发/正文限额须能表示为 32 位无符号正整数；资产大小不得超出 SQLite 的有符号 64 位范围，总上传超时不得小于空闲超时。
+
+初始化持久化域分离 HMAC 签名密钥指纹；重启时不一致返回 SIGNING_KEY_MISMATCH，避免意外密钥替换导致未来 token 失效。M1 不提供在线轮换或备份恢复 generation 重置工具；后续工具需独立验证。API key 可在停止服务后更换，不改变数据库 generation。签名密钥与 API key 不允许复用同一内容。
+
+当前配置的上传/下载限额是 M4 的保留配置。M1 已生效的是元数据正文限制、30 秒 JSON 接收上限、数据库队列和受认证请求并发门槛；并发门槛使用 dbQueueCapacity，饱和返回 503，不能将保留配置当成已实现资产传输。

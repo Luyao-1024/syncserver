@@ -1,6 +1,6 @@
 # CloudKit 风格接口兼容契约
 
-状态：计划实现的子集。不能用于宣称完整 iCloud 或 CloudKit 兼容。上位规格：[spac.md](../../spac.md)。
+状态：M1 已实现 zone 列表与原生基础接口；其余均为计划实现的子集。不能用于宣称完整 iCloud 或 CloudKit 兼容。上位规格：[spac.md](../../spac.md)。
 
 ## 范围与路径
 
@@ -166,3 +166,11 @@ CloudKit 风格业务错误使用 `serverErrorCode` 和 `reason`；逐项操作�
 ## 兼容证据
 
 已观测接口形状来自 [kei 调研资料](open-source-reference.md)。记录修改和资源上传参考 Apple 官方 Web Services 文档。首版只承诺本矩阵内的请求/响应，不能承诺未经适配的 kei、icloudpd 或 Apple Photos 完整工作。
+
+## M1 实际支持状态
+
+只开放 `GET /healthz`、`GET /readyz`、Bearer 认证的 `GET /v1/capabilities`，以及基础路径下的 `POST /zones/list`。zone 列表接受空 JSON 对象，Content-Type 为 application/json 或 text/plain（可带 charset）。未知选项、数组和畸形 JSON 返回 BAD_REQUEST，不忽略参数。
+
+错误格式为 serverErrorCode/reason；未认证返回 401 AUTHENTICATION_REQUIRED，其他 container 返回 404 UNKNOWN_ITEM，development/public/shared 及尚未实现的已知接口返回 501 UNSUPPORTED_CAPABILITY。未知接口返回 404，zone 列表错误方法返回 405。所有响应附带 no-store、x-request-id 和 nosniff。
+
+M1 能力声明逐项列出 false 的快照/记录/变化/资源能力；不生成 cursor、receipt 或资源签名 URL。协议和资源 JSON fixture 的文档检查仍不构成其接口已实现的证据。

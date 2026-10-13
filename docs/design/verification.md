@@ -1,6 +1,6 @@
 # 验证计划
 
-状态：尚无实现和测试结果。对应[spac.md 的 A01–A23](../../spac.md)。
+状态：M1 基础测试已加入；完整同步场景待后续阶段。M1 执行证据见 [M1 基础](m1-foundation.md)。对应[spac.md 的 A01–A23](../../spac.md)。
 
 ## 文档阶段
 
@@ -64,3 +64,9 @@ cargo test --locked --all-targets
 ```
 
 随后推送并等待该 SHA 的远端 CI 终态。只有实际发布和 smoke test 通过后，才能更新 README 为可运行版本。性能通过与公网部署是独立证据。
+
+## M1 聚焦验证
+
+新增 configuration、startup_http、persistence、process_restart 测试与 store 队列单元测试。使用合成凭证、临时目录、随机 loopback 端口；验证真实 HTTP、真实 SQLite、真实子进程信号退出。M1 已有 Cargo 工程，文档检查使用 `python tools/check-docs.py`，不能再使用拒绝 Rust 文件的 --docs-only。
+
+M1 的正文计数为 0 是尚无资产操作的事实，未满足 A01 的上传后百次增量轮询验收。该验收仍等待 M3/M4，不能从基础测试推导出完整同步性能。

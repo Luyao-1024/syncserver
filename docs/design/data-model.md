@@ -1,6 +1,6 @@
 # 数据模型
 
-状态：逻辑结构，尚无 SQL 迁移。[规格](../../spac.md)与[事务约束](concurrency-recovery.md)共同约束实现。
+状态：M1 已建立 schema v1 迁移；完整记录/资源逻辑结构待后续迁移实现。[规格](../../spac.md)与[事务约束](concurrency-recovery.md)共同约束实现。
 
 ## 身份与版本
 
@@ -75,3 +75,7 @@ records 是查询投影，不是历史的唯一来源。删除移除/标记当�
 所有结构化资产引用必须校验 namespace、published 状态和大小/摘要。客户端发来的任意 URL 只可作为普通字符串，不能被服务端当成可读取资产或触发外部下载。
 
 SQLite 的路径不是外部 API 标识，禁止向客户端泄露真实数据目录。
+
+## M1 物理 schema
+
+当前 schema v1 只包含 server_meta、namespaces、zones、namespace_counters 和 service_starts。SQLite application_id 标识本应用，user_version 和 server_meta.schema_version 一致；拒绝已有未知应用或新版 schema。初始化以单事务创建命名空间、zone 和 0 水位，普通重启不重建表或更新 generation。后续阶段通过新迁移补充记录/资产表，不提前以空表宣称这些语义已实现。
