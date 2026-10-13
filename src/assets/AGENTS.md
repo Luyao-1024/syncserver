@@ -1,6 +1,6 @@
 # Assets 模块规则
 
-继承 [src/AGENTS.md](../AGENTS.md)。先读[资源生命周期](../../docs/design/asset-lifecycle.md)、[恢复](../../docs/design/concurrency-recovery.md)、[媒体分层](../../docs/design/progressive-media-sync.md)。
+继承 [src/AGENTS.md](../AGENTS.md)。先读[资源生命周期](../../docs/design/asset-lifecycle.md)、[恢复](../../docs/design/concurrency-recovery.md)、[完整媒体同步](../../docs/design/media-sync.md)。
 
 - 接收字节同一遍计算 SHA-256/大小，校验并稳定发布后才允许引用。
 - 路径由可信 ID 派生；排他暂存、符号链接防护、同文件系统发布与 fsync。

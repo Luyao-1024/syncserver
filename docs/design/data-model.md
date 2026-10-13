@@ -65,7 +65,7 @@ records 是查询投影，不是历史的唯一来源。删除移除/标记当�
 
 照片领域记录的原图和缩略图必须同 namespace、同 content generation 且 Published。一般记录不强制照片角色。content generation 改变时两角色及 CPLAsset/CPLMaster 绑定在单 zone atomic 事务中更新。
 
-收藏/标题等元数据更新不生成新 content generation，也不重新上传资源。历史版本保留其对应角色引用，不能渲染成另一版本的缩略图。详见[渐进媒体同步](progressive-media-sync.md)。
+收藏/标题等元数据更新不生成新 content generation，也不重新上传资源。历史版本保留其对应角色引用，不能渲染成另一版本的缩略图。详见[完整媒体同步](media-sync.md)。
 
 ## 资产字段
 

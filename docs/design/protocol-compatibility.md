@@ -52,7 +52,7 @@
 
 照片使用 CPLMaster 资源描述与 CPLAsset/masterRef 的受支持子集，并绑定 original/thumbnail 与 content generation。两记录发布和内容更新在单 zone atomic 批次中验证；不能将通用 CRUD 当作绕过照片完整性的方法。
 
-缩略图与原图 AssetId、digest、size 各自独立。预览 URL 不指向原图。具体字段扩展和下载流程见[渐进媒体同步](progressive-media-sync.md)与[资源生命周期](asset-lifecycle.md)。
+缩略图与原图 AssetId、digest、size 各自独立。预览 URL 不指向原图。具体字段扩展和下载流程见[完整媒体同步](media-sync.md)与[资源生命周期](asset-lifecycle.md)。
 
 ## 变化请求与响应
 

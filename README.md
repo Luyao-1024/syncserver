@@ -8,7 +8,7 @@
 
 - 未变化照片的摘要持久化；列举、增量查询和 HEAD 不重新读取正文计算 hash。
 - 首次建立一致清单，之后按变化游标同步新增、修改和删除。
-- 上传原图与缩略图；下行元数据、缩略图后自动后台补齐原图，浏览/点击提升下载优先级。
+- 上传原图与缩略图；下行每张照片的两个资源校验并稳定发布后才进入图库，复用现有本地加载流程。
 - 保留客户端的上传范围、下载范围、删除抑制和冲突决策；服务端提供证据和条件写入。
 - 兼容已核验的 CloudKit 风格 URL 与 JSON 子集。不是 Apple 服务替代登录，也不宣称完整兼容 iCloud Photos。
 - 独立部署；与 `/home/luyao/workspace/photoViewer` 分离，不复制图库数据库或 GTK 依赖。
@@ -19,10 +19,10 @@
 2. [架构与目录](docs/design/architecture.md)
 3. [接口兼容范围](docs/design/protocol-compatibility.md)
 4. [数据模型](docs/design/data-model.md)与[同步状态机](docs/design/sync-state-machine.md)
-5. [渐进媒体同步](docs/design/progressive-media-sync.md)、[资源生命周期](docs/design/asset-lifecycle.md)与[事务和恢复](docs/design/concurrency-recovery.md)
+5. [完整媒体同步](docs/design/media-sync.md)、[资源生命周期](docs/design/asset-lifecycle.md)与[事务和恢复](docs/design/concurrency-recovery.md)
 6. [安全与部署](docs/design/security-operations.md)
 7. [验证计划](docs/design/verification.md)与[分阶段实施](docs/design/implementation-plan.md)
-8. [开源参考及复用边界](docs/design/open-source-reference.md)与[初始 ADR](docs/adr/0001-initial-architecture.md)
+8. [开源参考及复用边界](docs/design/open-source-reference.md)与[初始 ADR](docs/adr/0001-initial-architecture.md)、[完整下载后显示决策](docs/adr/0002-complete-media-before-display.md)
 
 Agent 的规范入口是 [AGENTS.md](AGENTS.md)。[Agent.md](Agent.md) 提供各目录规范索引。
 

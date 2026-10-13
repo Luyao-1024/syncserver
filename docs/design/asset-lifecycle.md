@@ -38,7 +38,7 @@ Reserved → Receiving → Verified → PublishPrepared → ObjectPublished → 
 
 照片发布要求 original/thumbnail 两个角色。首版上传客户端从同一稳定原图生成并上传缩略图，服务端验证缩略图的有界类型、尺寸和字节限制；不在查询中生成预览。
 
-资源可先后上传，但绑定事务只有两角色 Published 后才成功。下载按 role 返回精确资源；缩略图缺失必须报错，不偷偷发送原图。缩略图请求保留独立有界资源额度。详见[渐进媒体同步](progressive-media-sync.md)。
+资源可先后上传，但绑定事务只有两角色 Published 后才成功。下载按 role 返回精确资源；缩略图缺失必须报错，不偷偷发送原图。缩略图请求保留独立有界资源额度。详见[完整媒体同步](media-sync.md)。
 
 ## 记录提交
 
