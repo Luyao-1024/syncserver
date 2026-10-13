@@ -228,7 +228,8 @@
         "_syncserver": {
           "role": "thumbnail",
           "expectedSize": 69,
-          "expectedSha256": "b02f893d7f0044beb40b86c2e7963b908aa0fa51e694b582fb1b7bc88b5e773b"
+          "expectedSha256": "b02f893d7f0044beb40b86c2e7963b908aa0fa51e694b582fb1b7bc88b5e773b",
+          "intent": "create"
         }
       }
     ]

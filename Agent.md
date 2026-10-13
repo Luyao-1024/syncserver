@@ -5,6 +5,7 @@
 | 工作范围 | 阅读 |
 |---|---|
 | 全仓库 | [根 AGENTS](AGENTS.md)与[spac.md](spac.md) |
+| 同步协调设计 | [上行契约](docs/contracts/upload-coordination.md)、[下一步任务](docs/design/next-development-tasks.md) |
 | Rust 模块 | [src/AGENTS.md](src/AGENTS.md) |
 | 接口和兼容适配 | [src/api/AGENTS.md](src/api/AGENTS.md) |
 | 领域类型与纯规则 | [src/domain/AGENTS.md](src/domain/AGENTS.md) |

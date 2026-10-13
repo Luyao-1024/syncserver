@@ -8,3 +8,5 @@
 - 事务不等待上传、不计算正文 hash、不调用网络。
 - 首版不裁剪变化或历史，不暗中删除资源引用。
 - published 照片必须同时引用匹配 generation 的已发布原图和缩略图。
+
+租约状态和最后写入在同一所有者的事务中校验，持久 fence 不重置，正常重启不改变同步 generation；lease/续租不分配媒体 seq。读取提交事实无须上行租约。先读[协调契约](../../docs/contracts/upload-coordination.md)。

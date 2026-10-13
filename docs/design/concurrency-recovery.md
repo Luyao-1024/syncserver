@@ -65,3 +65,13 @@ M1 没有 upload_sessions、publish_intents 或 Published 资产；恢复仅检�
 已通过并发 update/delete、atomic 后项业务失败、SQL append 故障、nonatomic Pending 批次重启和真正执行中 SIGKILL 的恢复测试。HTTP 响应丢失不撤销已接受事务；receipt 与投影/历史/变化共同提交。子项业务错误会保存原错误结果，SQL 故障项未保存完成结果，重试继续执行。
 
 照片图在提交前按受影响组件验证；客户端 ASSETID 在可信资源边界明确拒绝，正向资源关联及临时凭证指纹归一化待 M4。[记录契约](../contracts/records.md)与 [M2 证据](m2-records.md)记录当前行为。
+
+## 设备上行租约与中止（新增契约，未实现）
+
+服务器目录锁/单 SQLite 写入线程不是设备上行锁。[协调契约](../contracts/upload-coordination.md)新增 namespace 级租约/fencing，所有用户变更入口与最后的提交统一检查。下行读取无须租约；保活/阶段控制有独立配额，避免被正文传输和读请求占满。
+
+本轮获取失败直接跳过上行；已获取但进度落后继续持锁下行和保活。失锁后终止该轮当前及所有未完成任务，逐项报错，不在本轮重获租约继续。前项已提交/有效确认的事实保持，失锁后的迟到回调不改 dirty；未知提交通过下一轮无锁 receipt 状态读取协调。
+
+稳定文件发布意图只安全结算或隔离，不为失效代次增加新用户成功确认/照片绑定。不能通过删除正式对象回滚一个已提交记录。逻辑 operation fingerprint 不包含租约凭证/代次/轮次字段，重新取得租约不改变同一请求的幂等身份；改变 revision 或请求内容则按原 M2 契约使用新 operationId。
+
+正常重启失效旧租约并推进持久 fence，不改变同步 database_generation。未来恢复 schema 同时检查租约元数据和媒体计数，租约活动不分配媒体 commit seq。

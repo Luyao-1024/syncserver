@@ -72,6 +72,12 @@ GET 支持一个 bytes 范围，包括 start-end、start-、-suffix；越界、�
 
 不存在/其他 namespace 的 asset/session 返回 HTTP 404 UNKNOWN_ITEM；未认证 401；上传大小超限 413；队列满 429/503；业务状态冲突 409。兼容入口使用 serverErrorCode/reason，原生入口同样返回该错误对象。
 
-v0.1 默认原图上限 512 MiB、缩略图上限 2 MiB；原图上限可配置。JSON 上限 1 MiB；tokens/修改批次最大 200、zones 最大 20、页大小 1–200。URL 到期时间使用 Unix 秒；JSON expiresAt/urlExpiresAt 用 UTC RFC 3339。
+v0.1 默认原图上限 512 MiB、缩略图上限 2 MiB；原图上限可配置。JSON 上限 1 MiB；上传 tokens 最大 200，记录修改/lookup 按[记录契约](records.md)最大 400；zone 数组每请求最大 20、页大小 1–200。URL 到期时间使用 Unix 秒；JSON expiresAt/urlExpiresAt 用 UTC RFC 3339。
 
 资产 receipt 与快照/token 的签名密钥跨重启稳定；密钥轮换或数据库恢复后旧证据可失效，账户通过元数据接口取新证据。URL 不进入日志。所有例子凭证均为合成占位，不能访问真实服务。
+
+## 上行协调新增约束（未实现）
+
+所有变更路径附带[上行租约](upload-coordination.md)凭证，上传能力/会话绑定 leaseId/fence。`tokens[]._syncserver` 增加 intent=create/update（对应新增/修改阶段）；预留/续期/正文及 Published 成功确认都在当前代次和阶段内，不能用仍有效的上传 URL 跨越租约失效。现有 fixture 描述合成结构，不能视为 M4 已通过。
+
+会话/资源/receipt 状态 GET 和下载继续无须上行租约。上传完成不直接清本地 dirty，照片记录对的变更结果确认并经有效本地回调后才更新字段。阶段顺序固定删除→修改→新增；入库对象和服务器摘要规则不变。

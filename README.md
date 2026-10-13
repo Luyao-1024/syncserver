@@ -91,6 +91,14 @@ python tools/check-docs.py
 
 远端推送前执行 fmt/clippy/build/test 完整闸门，详见 [AGENTS.md](AGENTS.md)。完整同步性能、资产恢复、远端 CI、真实公网部署和 PhotoViewer 接入尚未验证。
 
+## 新同步协调规则（文档已冻结，代码待实现）
+
+先下行 → 获取上行租约 → 持锁比较云端最新 token 与本地 appliedToken；落后则持锁重新下行并保活，追平后删除→修改→新增。获取失败直接跳过本轮上行；锁失效中止当前及所有后续未完成项并报错。下行可多端并发。
+
+dirty 直接使用本地既有同步记录的 DB 字段，不另写 dirty 文件/台账/队列。上行有效成功确认回调才更新对应字段，上传期间新编辑不得被清除；元数据修改不传文件，内容修改才上传变化资源。协议细节见[上行协调契约](docs/contracts/upload-coordination.md)与 [ADR 0004](docs/adr/0004-upload-lease-and-database-dirty.md)。
+
+当前 M2 尚未实现租约/进度门槛/阶段守卫/客户端 dirty。下一步按[开发任务清单](docs/design/next-development-tasks.md)先完成 M3-A token/真实增量，再做 M3-B 租约门槛，之后 M4 资源绑定与 C1 客户端。
+
 ## 后续目标
 
 - 持久化已验证内容摘要；列举、增量查询和 HEAD 不重新读取既有正文计算 hash。
@@ -99,7 +107,7 @@ python tools/check-docs.py
 - 保留客户端上传范围、下载范围、删除抑制和冲突决策，服务端提供证据和条件写入。
 - 兼容已核验的 CloudKit 风格 URL 与 JSON 子集；不提供 Apple 登录或原生 Photos 客户端登录，不宣称完整 iCloud 兼容。
 
-M2 已完成元数据记录、revision、历史版本与事务；下一阶段 M3 完成共享快照与增量；M4 完成双资源接收、稳定发布与恢复；M5 负责发布和部署；C1 单独接入 PhotoViewer。
+M2 已完成元数据记录、revision、历史版本与事务；下一阶段 M3 完成共享快照/增量及上行租约门槛；M4 完成受租约约束的双资源接收、稳定发布与恢复；M5 负责发布和部署；C1 单独接入 PhotoViewer。
 
 ## 设计文档
 
@@ -112,3 +120,8 @@ M2 已完成元数据记录、revision、历史版本与事务；下一阶段 M3
 - [ADR 0001](docs/adr/0001-initial-architecture.md)、[ADR 0002](docs/adr/0002-complete-media-before-display.md)、[ADR 0003](docs/adr/0003-freeze-bootstrap-photo-and-asset-contracts.md)
 
 Agent 入口为 [AGENTS.md](AGENTS.md)，导航为 [Agent.md](Agent.md)。许可证：[MIT](LICENSE)。
+
+
+本次开发分支约定：SyncServer 继续在 main；PhotoViewer 使用 dev，客户端维护
+`docs/modules/native-sync.md` 作为 C1 契约摘要。同步规则新增能力仍未实现，本次两仓库
+只有文档/fixture 与 PhotoViewer dev CI 触发配置变更，不把这些当作客户端功能交付。

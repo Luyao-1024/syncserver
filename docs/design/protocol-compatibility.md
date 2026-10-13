@@ -180,3 +180,9 @@ M1 能力声明逐项列出 false 的快照/记录/变化/资源能力；不生�
 新增 records/modify 与 records/lookup，统一接受 JSON/text/plain 并拒绝重复 JSON 键。支持字段、补丁语义、条件与错误、nonatomic 幂等恢复和固定限额以[记录契约](../contracts/records.md)为准。能力声明 recordCrud=true，并返回支持字段类型、协议版本/算法/保留模式和记录限额。
 
 snapshots/incrementalChanges/assetUpload/assetDownload/photoPublication=false。records/query、带 snapshotToken 的 lookup 和资源正向发布未开放；M2 不将当前读取冒充跨请求一致清单。M1 小节是上一阶段支持范围的历史记录，不应作为当前 capability 列表。
+
+## 新增上行协调扩展（设计冻结，当前不开放）
+
+[协调契约](../contracts/upload-coordination.md)定义 upload-leases 获取/续租/进度/阶段/释放和只读 operation 状态。它们属于本服务原生扩展，不声称是 Apple 私有协议。M3 实现 token/租约/门槛后统一守卫 records/modify 及所有后续变更入口；M4 会话与上传能力绑定同一 fence。下行 query/lookup/changes/资源读取不持上行锁。
+
+启用时声明 uploadLease/fencing/uploadProgressGate/uploadPhases/operationStatusRead 等能力与实际 TTL/保活参数；只有实现且测试通过才置 true。M2 当前无这些能力、请求头或状态读取入口，本轮仅文档冻结。新阶段只接受同类 operationType 批次，不能把原 M2 混合批次支持保留成跨阶段旁路。

@@ -7,3 +7,5 @@
 - 照片的原图/缩略图属于同一内容 generation；不能把不同版本拼成已发布照片。
 - 通用记录与照片领域记录分开验证，不把所有 CloudKit 记录误当照片。
 - 服务端不拥有客户端加载队列、上传范围或删除抑制策略；双资源就绪后才可见。
+
+租约/期限/fencing/固定 scope 和 Delete→Modify→Create 规则以[协调契约](../../docs/contracts/upload-coordination.md)为准；token 比较按 kind/scope/generation/完整水位语义，不能按字节相同。纯图仅依赖稳定资源身份，暂时租约/receipt 不进入图或逻辑幂等指纹。

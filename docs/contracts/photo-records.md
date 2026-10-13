@@ -67,3 +67,9 @@ photo_bindings 必须有唯一键 `(namespace,zone,photo_id)` 和 `(namespace,zo
 ## M2 验证边界
 
 纯图测试和真实 HTTP 拆对拒绝已验证；服务端不接纳客户端自称已发布的 ASSETID 描述。M2 尚无可信资源来源，完整照片创建返回 UNSUPPORTED_CAPABILITY 而非写入半成品；真实资源确认、持久引用归一化及正向配对发布验收留到 M4。
+
+## 分类上行和冲突时间补充
+
+[协调契约](upload-coordination.md)规定删除→修改→新增；配对 delete/update/create 分别位于对应阶段。metadata-only 不上传资源；同时含内容/元数据修改的同一照片合并为 atomic 对更新。重命名互换仍按最终图验证，不通过暂时释放路径破坏一对一。删除后重建使用新 ID，不能复用退休名称。
+
+冲突基于既有基线及独立 metadata/content/deletion 事件时间；文件 mtime/assetDate 不能替代全部修改语义。未来删除墓碑补充 deletedAt，当前 M2 未保留该字段。dirty 是本地 DB 字段，阶段开始或单资源成功不清它。

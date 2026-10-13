@@ -77,3 +77,9 @@ atomic 成功结果与记录/历史/变化在同事务保存；失败整体回�
 ## 照片边界
 
 CPLAsset/CPLMaster 通过[照片图契约](photo-records.md)验证最终图，拆对、混合 generation、解绑和不安全路径拒绝。M2 所有结构化 ASSETID 写入在可信资源边界返回 501；没有 Published 资源来源，因此不会成功发布照片或把客户端描述符写入历史。正向双资源绑定/发布以及下载描述符渲染在 M4 实现。
+
+## 启用上行协调后的约束（待 M3）
+
+上述内容是已验证 M2 接口。新增[协调契约](upload-coordination.md)启用后，所有 records/modify/兼容变更路径必须有有效租约、已通过进度门槛且阶段匹配；不提供无锁 legacy 写入旁路。批次只含当前 Delete/Modify/Create 阶段允许的 operationType，照片对同类操作继续 atomic；lookup 不需要租约。
+
+租约/阶段/周期凭证不进入逻辑 operation fingerprint。M2 当前已支持的混合批次在协调阶段中将受限制，需有新行为测试；revision/图规则和幂等事实继续保留。额外变更事件时间、删除时间的 wire 字段在 M3 契约实现中补齐，不声称当前 M2 墓碑已有这些信息。

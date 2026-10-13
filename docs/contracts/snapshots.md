@@ -59,3 +59,7 @@ zone 集合及 namespace 配置在数据目录首次初始化后固定；v0.1 �
 跨类型查询间的成对更新/删除；分页中断；snapshot/marker 错种类与跨范围；快照 lookup；atomic 变化跨页并中断；配置 zone 变化；快照重启可用。
 
 关联：[状态机](../design/sync-state-machine.md)、[照片记录](photo-records.md)、[fixtures](fixtures.json)。
+
+## 与持锁上行门槛的关系
+
+共享清单所有类型/页完整后，H 的 zone syncToken 才能在本地协调/资源发布结束后成为 appliedToken。收到 token 或推进 ingestToken 不代表达到上行门槛。持锁检查使用[上行协调契约](upload-coordination.md)的语义比较；跨 scope/种类 token 拒绝，不能将 snapshotToken 直接作同步位置。

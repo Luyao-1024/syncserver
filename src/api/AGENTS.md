@@ -8,3 +8,5 @@
 - token 和资源 URL 绑定范围与方法；不得信任 Host 生成外部 URL。
 - 兼容别名共享领域逻辑，不能各自实现出不同版本控制。
 - API 提供角色分明的缩略图/原图描述；客户端成对下载并入库，UI 不承担网络下载。
+
+新增[上行协调](../../docs/contracts/upload-coordination.md)后，变更/alias 统一租约、最新门槛和阶段；control 与只读路径区分，迟到 release 不释放新持有者，重复租约头拒绝。未实现不得把 capability 置 true。

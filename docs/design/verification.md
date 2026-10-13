@@ -74,3 +74,20 @@ M1 的正文计数为 0 是尚无资产操作的事实，未满足 A01 的上传
 ## M2 聚焦验证
 
 新增 records_http、records_store、photo_graph，以及 migrations 单元测试/执行中 SIGKILL 测试；更新受影响启动/持久化测试。M2 新增 21 个测试，总计 35。覆盖 A04 的条件并发与 A05 的 atomic 回滚，以及幂等/变化索引/元数据历史基础；其余完整同步验收仍按阶段推进，不能将纯图测试当成实际资源发布成功。详情见 [M2](m2-records.md)。
+
+## 上行协调新增验收（待 M3/M4/C1）
+
+对应 spac.md A24–A33：
+
+1. 两设备并发获取仅一个有效租约，失败方一次跳过，dirty 不变；多端下行仍成功。
+2. 首次下行与取锁之间远端发生修改，锁内检查/重新下行追平；分页/跨类型/未完成资源不误判 ready。
+3. 仅无关 zone 变化或 token 表示不同，无变化空页仍可语义追平；篡改/错 kind/错 scope/恢复 generation 错误明确区分。
+4. 使用可控时钟跨多个 TTL 模拟大文件、独立保活和控制队列；不依赖长真实 sleep，不把保活当上传续传。
+5. 失锁取消当前正文及所有未完成项并逐项报错；旧 fence 最终提交、迟到 release、迟到 HTTP 200 不写入/清字段。
+6. 先前已确认成功不回滚；已提交响应丢失通过无锁状态读取恢复，不重复创建或清新 dirty。
+7. Delete/Modify/Create 实际 HTTP 阶段约束；元数据操作无资源 I/O/hash，路径互换修改 atomic。
+8. C1 用真实本地 DB 验证 dirty 字段+callback 版本竞争、NEW 期间新编辑/删除、nonatomic 部分成功、只读 AlreadyCurrent 确认。
+9. 下行冲突副本、独立组别合并、deletedAt 仲裁、同步内部写入不产生 dirty；上传范围/本地删除抑制不被扩大。
+10. 正常重启 fence 增长/旧租约失效，但同步 token/generation 正常保留；租约/续租不进入媒体 changes 或读取正文。
+
+本次只修改设计/JSON fixture，不执行 Rust 或 HTTP 测试；新增行为不能借用之前 M2 的 35 个测试宣称已通过。
