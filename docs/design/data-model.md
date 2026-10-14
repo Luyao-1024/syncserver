@@ -1,6 +1,6 @@
 # 数据模型
 
-状态：M2 已建立 schema v2 记录/历史/变化迁移；资源存储待 M4。[规格](../../spac.md)与[事务约束](concurrency-recovery.md)共同约束实现。
+状态：当前 schema v5 已建立记录/历史/变化、事件、租约、资源、会话与发布意图。发布前不承诺开发版数据库迁移兼容。[规格](../../spac.md)与[事务约束](concurrency-recovery.md)共同约束实现。
 
 ## 身份与版本
 
@@ -86,11 +86,11 @@ schema v2 增加 records、record_versions、changes、photo_bindings 和 operat
 
 operation_receipts 主键为 (namespace,operation_id,item_index)；-1 为整个请求，nonatomic 子项使用非负索引。result_json 为空表示 Pending，只绑定指纹；每个子结果与相应记录事务一起提交，之后完整根结果稳定保存。
 
-资产表及 ASSETID 正向确认仍待 M4；当前客户端描述符不进入记录/历史/指纹成功结果。索引已用实际 HTTP 数据和 EXPLAIN 验证，证据见 [M2](m2-records.md)，不等于 M3 整体快照分页已经验收。
+在 M2 历史阶段，资产表与正向确认未开放；M4 当前已验证与归一化资产描述，临时 URL/receipt 不进入记录/历史/指纹。索引已用实际 HTTP 数据和 EXPLAIN 验证，证据见 [M2](m2-records.md)，不等于 M3 整体快照分页已经验收。
 
-## 上行协调与客户端字段（待实现）
+## 上行协调与客户端字段（服务端已实现，客户端待 C1）
 
-服务器计划增加 upload_leases（namespace 唯一当前持有者、leaseId/deviceId、凭证摘要/签名范围、固定 zone 集合、期限、phase、verifiedHead）和 namespace_lease_counters（持久 fence/启动代次）。这些不是 schema v2 已存在的表，M3 通过后续迁移加入。上传会话/意图在 M4 绑定 leaseId/fence/更新或新增意图；记录版本补充 metadataModifiedAt/contentModifiedAt/deletedAt 及稳定决胜信息，尤其墓碑不能丢删除时间。
+当前 `upload_lease` 单行同时维护 namespace 的当前持有者、leaseId/deviceId、固定 zones、服务器单调期限、显示期限、phase/verifiedHead 和持久 fence；不以 metadata generation 充当租约代次。`records/record_versions.events_json` 保存独立 metadataEvent/contentEvent/deletionEvent（editedAtMs/source/eventId）。`assets`、`upload_sessions`、`publish_intents`、`upload_reservations` 保存已发布摘要/尺寸/缩略图资格、lease/fence/intent、持久发布/隔离意图和资源预留幂等；实现见[基本服务端](v0.1-server.md)。
 
 C1 的 dirty 是本地既有同步记录上的字段，另有本地变更版本、组别时间、远端身份/基线和必要的 operationId 关联。没有独立 dirty 文件/表/持久队列；下载待办、远端 inbox 与 sync_publications 继续负责不同职责，不是 dirty 镜像。
 

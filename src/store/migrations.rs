@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x53594e43;
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 pub(crate) fn initialize(
     connection: &mut Connection,
@@ -110,6 +110,15 @@ pub(crate) fn initialize(
         }
         tx.execute_batch(include_str!("migration_v2.sql"))?;
     }
+    if fresh || version < 3 {
+        tx.execute_batch(include_str!("migration_v3.sql"))?;
+    }
+    if fresh || version < 4 {
+        tx.execute_batch(include_str!("migration_v4.sql"))?;
+    }
+    if fresh || version < 5 {
+        tx.execute_batch(include_str!("migration_v5.sql"))?;
+    }
     let last_version: i64 = tx.query_row(
         "SELECT coalesce(max(seq),0) FROM record_versions WHERE namespace_id=1",
         [],
@@ -174,7 +183,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
                 .unwrap(),
-            2
+            5
         );
         assert_eq!(
             db.query_row("SELECT count(*) FROM record_versions", [], |row| row

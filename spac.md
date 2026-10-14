@@ -1,6 +1,8 @@
 # SyncServer 规格与验收（spac.md）
 
-状态：M1/M2 已实现；完整 v0.1 仍待 M3–M5；日期：2026-10-13。文件名按用户要求保留为 `spac.md`。
+状态：M3/M4 基本服务端已实现，M5 CI/部署工具已建立，C1 未接入；日期：2026-10-14。文件名按用户要求保留为 `spac.md`。
+
+首次正式发布前不要求兼容旧开发版数据库；仍验证当前结构的持久化、恢复与普通重启 token 连续性。
 
 本文定义完整 v0.1 的需求、首版范围和验收；当前实现范围与证据见 [M1 基础](docs/design/m1-foundation.md)与 [M2 记录](docs/design/m2-records.md)。设计细节以本文约束为上位，接口行为以兼容矩阵为准。
 
@@ -115,4 +117,4 @@
 | A32 | metadata/content 独立冲突合并，删除比较 deletedAt，已退休 ID 重建不复用，内部下行不制造 dirty |
 | A33 | 普通重启使旧租约失效，新 fence 更大，元数据 token/generation 保持正常重启语义 |
 
-这些新增要求已冻结文档，M2 代码未实现；实现与跨客户端测试按[后续任务](docs/design/next-development-tasks.md)推进。
+服务端协调已实现并有 HTTP/失锁/保活证据，客户端 dirty/回调与实际 UI 仍待 C1；实现与跨客户端测试按[后续任务](docs/design/next-development-tasks.md)推进。

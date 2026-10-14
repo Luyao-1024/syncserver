@@ -1,0 +1,31 @@
+[Unit]
+Description=Photo synchronization server
+After=network.target
+
+[Service]
+Type=simple
+User=syncserver
+Group=syncserver
+UMask=0077
+EnvironmentFile=/etc/syncserver/server.env
+ExecStart=/usr/local/bin/syncserver
+StateDirectory=syncserver
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/syncserver
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=75
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 # 同步与游标状态机
 
-状态：待实现。关联[协议](protocol-compatibility.md)与[数据模型](data-model.md)。
+状态：服务端 token/快照/增量/租约已实现，实际客户端接收/dirty 与 UI 待 C1；服务端含合成持久接收示例。关联[协议](protocol-compatibility.md)与[数据模型](data-model.md)。
 
 ## 六种游标/能力
 
@@ -67,7 +67,7 @@ v0.1 不做按 desiredRecordTypes 的增量过滤，避免略过客户端后来�
 
 重建清单不等于重传所有资产：客户端可复用同 AssetId/digest 的稳定内容。不能仅因 token 失效推断任意记录删除。
 
-## 上行协调状态机（新增，待 M3/M4/C1）
+## 上行协调状态机（服务端已实现，客户端待 C1）
 
 规范见[上行协调](../contracts/upload-coordination.md)。正常下行后获取租约一次；获取失败进入 UplinkSkipped，DB dirty 保持。持有者进入 Checking，服务器核对云端最新 zone token 与本地 appliedToken；落后则在持锁/保活中 CatchingUp，完成固定 H 的投影、明确下载范围和冲突后再检查。
 

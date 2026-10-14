@@ -1,8 +1,7 @@
 mod common;
-use common::{API_KEY, Running};
+use common::Running;
 use serde_json::{Value, json};
 use syncserver::Server;
-const BASE: &str = "/database/1/com.apple.photos.cloud/production/private";
 fn create(name: &str) -> Value {
     json!({"operationType":"create","record":{"recordName":name,"recordType":"Note","fields":{"value":{"type":"INT64","value":0}}}})
 }
@@ -12,16 +11,7 @@ async fn modify(
     atomic: bool,
     key: Option<&str>,
 ) -> (u16, Value) {
-    let mut request = app
-        .client
-        .post(format!("{}{BASE}/records/modify", app.base))
-        .bearer_auth(API_KEY)
-        .json(&json!({"atomic":atomic,"operations":operations}));
-    if let Some(key) = key {
-        request = request.header("Idempotency-Key", key);
-    }
-    let response = request.send().await.unwrap();
-    (response.status().as_u16(), response.json().await.unwrap())
+    common::fixture_modify(app, json!({"atomic":atomic,"operations":operations}), key).await
 }
 fn counts(path: &std::path::Path) -> (i64, i64, i64, i64, i64) {
     let db = rusqlite::Connection::open(path).unwrap();
@@ -40,7 +30,7 @@ async fn history_and_changes_are_atomic_complete_and_replay_never_appends_again(
             .1,
         first
     );
-    assert_eq!(modify(&app,vec![create("rollback"),json!({"operationType":"delete","record":{"recordName":"missing","recordChangeTag":"tag"}})],true,Some("rolled-back")).await.0,404);
+    assert_eq!(modify(&app,vec![json!({"operationType":"update","record":{"recordName":"history","recordChangeTag":tag,"fields":{"value":{"type":"INT64","value":9}}}}),json!({"operationType":"update","record":{"recordName":"missing","recordChangeTag":"tag"}})],true,Some("rolled-back")).await.0,404);
     let (_,second)=modify(&app,vec![json!({"operationType":"update","record":{"recordName":"history","recordChangeTag":tag,"fields":{"value":{"type":"INT64","value":1}}}})],true,None).await;
     assert_eq!(modify(&app,vec![json!({"operationType":"delete","record":{"recordName":"history","recordChangeTag":second["records"][0]["recordChangeTag"]}})],true,None).await.0,200);
     app.stop().await;

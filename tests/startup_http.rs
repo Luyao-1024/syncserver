@@ -53,20 +53,25 @@ async fn health_readiness_authentication_and_actual_capabilities() {
     assert_eq!(response.headers()["cache-control"], "no-store");
     assert!(response.headers().contains_key("x-request-id"));
     let value: Value = response.json().await.unwrap();
-    assert_eq!(value["stage"], "M2");
+    assert_eq!(value["stage"], "M4");
     assert_eq!(value["namespace"]["database"], "private");
     assert_eq!(value["zones"], json!(["PrimarySync"]));
     assert_eq!(value["capabilities"]["zoneListing"], true);
     assert_eq!(value["capabilities"]["recordCrud"], true);
-    for capability in [
+    for feature in [
         "snapshots",
         "incrementalChanges",
+        "uploadLeases",
+        "fencing",
+        "uploadPhases",
+        "operationStatusRead",
         "assetUpload",
         "assetDownload",
-        "appleAuthentication",
+        "photoPublication",
     ] {
-        assert_eq!(value["capabilities"][capability], false, "{capability}");
+        assert_eq!(value["capabilities"][feature], true, "{feature}");
     }
+    assert_eq!(value["capabilities"]["appleAuthentication"], false);
     assert_eq!(value["limits"]["maxAssetBytes"], 536870912);
     assert_eq!(value["limits"]["thumbnailMaxBytes"], 2097152);
     assert_eq!(value["limits"]["dbQueueCapacity"], 128);
@@ -119,13 +124,13 @@ async fn cloudkit_scope_json_content_types_and_explicit_unsupported_errors() {
         ),
         (
             "com.apple.photos.cloud/production/private/records/query",
-            "UNSUPPORTED_CAPABILITY",
-            501,
+            "BAD_REQUEST",
+            400,
         ),
         (
             "com.apple.photos.cloud/production/private/internal/records/query/batch",
-            "UNSUPPORTED_CAPABILITY",
-            501,
+            "BAD_REQUEST",
+            400,
         ),
     ] {
         let response = app
@@ -142,7 +147,7 @@ async fn cloudkit_scope_json_content_types_and_explicit_unsupported_errors() {
             code
         );
     }
-    for endpoint in ["/v1/snapshots", "/v1/uploads/session/content"] {
+    for endpoint in ["/v1/uploads/future/unknown-operation"] {
         let response = app
             .client
             .post(format!("{}{endpoint}", app.base))

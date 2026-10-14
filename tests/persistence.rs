@@ -171,7 +171,7 @@ async fn unknown_schema_and_corrupt_metadata_fail_closed() {
     ));
     {
         let db = rusqlite::Connection::open(&path).unwrap();
-        db.pragma_update(None, "user_version", 2).unwrap();
+        db.pragma_update(None, "user_version", 5).unwrap();
         db.execute("UPDATE server_meta SET database_generation='corrupt'", [])
             .unwrap();
     }

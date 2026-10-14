@@ -1,6 +1,6 @@
-# M2 元数据记录接口 v1
+# 元数据记录接口 v1
 
-状态：M2 已实现；日期：2026-10-13。基础路径 `/database/1/{container}/production/private`；Bearer 认证。接受 application/json 或 text/plain JSON，统一正文限额和 30 秒接收上限。拒绝重复 JSON 对象键、未知参数和错误类型；元数据端点不支持 URL query 参数。
+状态：M3/M4 已实现，M2 历史边界在相应小节保留；日期：2026-10-14。基础路径 `/database/1/{container}/production/private`；Bearer 认证。接受 application/json 或 text/plain JSON，统一正文限额和 30 秒接收上限。拒绝重复 JSON 对象键、未知参数和错误类型；元数据端点不支持 URL query 参数。
 
 ## 修改请求
 
@@ -56,7 +56,7 @@ atomic 任一错误整体回滚，以业务 HTTP 状态返回 serverErrorCode/re
 }
 ```
 
-desiredKeys 缺省返回全部字段，空数组返回空 fields，不隐藏身份/revision。snapshotToken 和分页参数在 M2 明确拒绝，M3 才开放。records/query 仍返回 501，不能把当前 lookup 当作完整初次清单。
+desiredKeys 缺省返回全部字段，空数组返回空 fields，不隐藏身份/revision。M3 已开放 snapshotToken 的历史 lookup 与 records/query；当前读取仍不能代替跨请求共享快照。分页 marker 仅用于 query。
 
 ## 通用字段子集
 
@@ -70,16 +70,16 @@ Idempotency-Key 为单个请求头，1–128 个非空白可打印 ASCII 字符�
 
 atomic 成功结果与记录/历史/变化在同事务保存；失败整体回滚，不登记成功 receipt。nonatomic 先持久登记完整请求指纹，再逐项将结果与事务共同保存，最后保存完整响应。Pending 批次重试只执行缺少 receipt 的项，保留已提交的成功和业务错误结果；数据库故障项没有结果，不被伪装成完成。
 
-已完成键返回原始域结果，即使后来记录又被修改/删除；无键的响应丢失需 lookup 核对。M2 不发行资源凭证；M4 接入前必须增加 ASSETID 验证及临时 URL/receipt 的归一化。
+已完成键返回原始域结果，即使后来记录又被修改/删除；无键的响应丢失需 lookup 核对。M2 历史版本不发行资源凭证；M4 已验证 ASSETID 并归一化临时 URL/receipt，读取时刷新描述符。
 
 修改/lookup 最多 400 项。标识最长 255 UTF-8 字节且不含控制字符；合并字段 JSON 最多 1 MiB，结果上限 8 MiB。批次使用保守响应/工作集预算，在写入前拒绝超限；lookup 累计超限返回 413，不返回截断的成功结果。HTTP 正文仍受实际配置 jsonBodyLimit 约束。
 
 ## 照片边界
 
-CPLAsset/CPLMaster 通过[照片图契约](photo-records.md)验证最终图，拆对、混合 generation、解绑和不安全路径拒绝。M2 所有结构化 ASSETID 写入在可信资源边界返回 501；没有 Published 资源来源，因此不会成功发布照片或把客户端描述符写入历史。正向双资源绑定/发布以及下载描述符渲染在 M4 实现。
+CPLAsset/CPLMaster 通过[照片图契约](photo-records.md)验证最终图，拆对、混合 generation、解绑和不安全路径拒绝。M2 所有结构化 ASSETID 写入在可信资源边界返回 501；没有 Published 资源来源，因此不会成功发布照片或把客户端描述符写入历史。当前 M4 已实现正向双资源绑定/发布与下载描述符渲染，参见[实现说明](../design/v0.1-server.md)。
 
-## 启用上行协调后的约束（待 M3）
+## 启用上行协调后的约束（已实现）
 
 上述内容是已验证 M2 接口。新增[协调契约](upload-coordination.md)启用后，所有 records/modify/兼容变更路径必须有有效租约、已通过进度门槛且阶段匹配；不提供无锁 legacy 写入旁路。批次只含当前 Delete/Modify/Create 阶段允许的 operationType，照片对同类操作继续 atomic；lookup 不需要租约。
 
-租约/阶段/周期凭证不进入逻辑 operation fingerprint。M2 当前已支持的混合批次在协调阶段中将受限制，需有新行为测试；revision/图规则和幂等事实继续保留。额外变更事件时间、删除时间的 wire 字段在 M3 契约实现中补齐，不声称当前 M2 墓碑已有这些信息。
+租约/阶段/周期凭证不进入逻辑 operation fingerprint。M2 历史混合批次在当前协调阶段被拒绝；revision/图规则和幂等事实继续保留。当前记录与墓碑的 `_syncserver` 已补充独立事件；M2 历史缺失时间保持缺失。

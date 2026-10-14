@@ -1,6 +1,9 @@
+mod assets;
 mod error;
 mod json;
+mod leases;
 mod records;
+mod sync;
 
 use crate::{Config, credentials::Credentials, store::Store};
 use axum::{
@@ -10,7 +13,7 @@ use axum::{
     http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
 };
 use error::ApiError;
 use serde_json::{Value, json};
@@ -30,6 +33,13 @@ pub(crate) struct AppState {
     pub store: Store,
     pub ready: AtomicBool,
     admission: Arc<Semaphore>,
+    control_admission: Arc<Semaphore>,
+    pub original_uploads: Arc<Semaphore>,
+    pub thumbnail_uploads: Arc<Semaphore>,
+    pub original_downloads: Arc<Semaphore>,
+    pub thumbnail_downloads: Arc<Semaphore>,
+    pub asset_metrics: Arc<crate::assets::Metrics>,
+    pub publication: Arc<std::sync::Mutex<()>>,
     requests: AtomicU64,
     rejected: AtomicU64,
 }
@@ -38,11 +48,27 @@ impl AppState {
     pub fn new(config: Config, credentials: Credentials, store: Store) -> Self {
         let capacity = config.limits.db_queue_capacity;
         Self {
-            config,
+            original_uploads: Arc::new(Semaphore::new(
+                (config.limits.upload_concurrency - config.limits.upload_concurrency / 2).max(1),
+            )),
+            thumbnail_uploads: Arc::new(Semaphore::new(
+                (config.limits.upload_concurrency / 2).max(1),
+            )),
+            original_downloads: Arc::new(Semaphore::new(
+                (config.limits.download_concurrency - config.limits.download_concurrency / 4)
+                    .max(1),
+            )),
+            thumbnail_downloads: Arc::new(Semaphore::new(
+                (config.limits.download_concurrency / 4).max(1),
+            )),
+            asset_metrics: Arc::new(crate::assets::Metrics::default()),
+            publication: Arc::new(std::sync::Mutex::new(())),
+            config: config.clone(),
             credentials,
             store,
             ready: AtomicBool::new(true),
             admission: Arc::new(Semaphore::new(capacity)),
+            control_admission: Arc::new(Semaphore::new(config.limits.control_queue_capacity)),
             requests: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
         }
@@ -52,6 +78,15 @@ impl AppState {
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     let private = Router::new()
         .route("/v1/capabilities", get(capabilities))
+        .route("/v1/snapshots", post(snapshot))
+        .route("/v1/uploads/{id}", get(assets::session))
+        .route("/v1/uploads/{id}/renew", post(assets::renew))
+        .route("/v1/uploads/{id}/content", post(assets::upload))
+        .route("/v1/assets/{id}", get(assets::describe))
+        .route("/v1/assets/{id}/content", get(assets::download))
+        .route("/v1/upload-leases", post(leases::acquire))
+        .route("/v1/upload-leases/{id}/{operation}", post(leases::control))
+        .route("/v1/operations/{id}", get(leases::status))
         .route("/v1/{*operation}", any(native_unsupported))
         .route(
             "/database/1/{container}/{environment}/{database}/{*operation}",
@@ -98,7 +133,11 @@ async fn authenticate(
         .next()
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    if headers.next().is_some() || !key.is_some_and(|key| state.credentials.authenticate(key)) {
+    let valid_bearer = key.is_some_and(|key| state.credentials.authenticate(key));
+    let valid_capability = !request.headers().contains_key(header::AUTHORIZATION)
+        && request.uri().path().ends_with("/content")
+        && assets::capability(&state, &request).is_ok();
+    if headers.next().is_some() || (!valid_bearer && !valid_capability) {
         return ApiError::new(
             StatusCode::UNAUTHORIZED,
             "AUTHENTICATION_REQUIRED",
@@ -114,7 +153,12 @@ async fn authenticate(
         )
         .into_response();
     }
-    let Ok(_permit) = state.admission.clone().try_acquire_owned() else {
+    let Ok(_permit) = (if request.uri().path().starts_with("/v1/upload-leases") {
+        state.control_admission.clone()
+    } else {
+        state.admission.clone()
+    })
+    .try_acquire_owned() else {
         state.rejected.fetch_add(1, Ordering::Relaxed);
         return ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -153,27 +197,28 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
 
 async fn capabilities(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
-        "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M2",
+        "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M4",
         "namespace": state.config.namespace, "zones": state.config.zones,
         "publicBaseURL": state.config.public_base_url.as_str(),
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,
         "capabilities": {
-            "zoneListing": true, "recordCrud": true, "snapshots": false,
-            "incrementalChanges": false, "assetUpload": false, "assetDownload": false,
-            "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": false
+            "zoneListing": true, "recordCrud": true, "snapshots": true,
+            "incrementalChanges": true, "uploadLeases": true, "fencing": true, "uploadPhases": true, "operationStatusRead": true, "tokenCurrentGate": true, "queryBatch": true, "changeAliases": true, "assetUpload": true, "assetDownload": true,
+            "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": true
         },
         // Asset/upload limits are configured reservations for M4, not enabled APIs.
         "limits": state.config.limits,
         "protocolVersion": 1, "checksumAlgorithm": "SHA256", "historyRetention": "all",
         "recordFieldTypes": ["STRING","INT64","DOUBLE","TIMESTAMP","BYTES","REFERENCE",
-            "STRING_LIST","INT64_LIST","DOUBLE_LIST","TIMESTAMP_LIST","BYTES_LIST","REFERENCE_LIST"],
+            "STRING_LIST","INT64_LIST","DOUBLE_LIST","TIMESTAMP_LIST","BYTES_LIST","REFERENCE_LIST","ASSETID"],
+        "syncLimits": {"maxPage":crate::domain::sync::MAX_PAGE,"maxZones":crate::domain::sync::MAX_ZONES},
         "recordLimits": { "maxOperations": crate::domain::records::MAX_OPERATIONS,
             "maxRecordBytes": crate::domain::records::MAX_RECORD_BYTES, "maxResultBytes": crate::domain::records::MAX_RESULT_BYTES },
         "recovery": state.store.metadata().recovery,
         "metrics": { "requests": state.requests.load(Ordering::Relaxed),
             "requestRejections": state.rejected.load(Ordering::Relaxed),
-            "database": state.store.metrics(), "assetBytesRead": 0, "assetBytesHashed": 0 }
+            "database": state.store.metrics(), "assetBytesRead": state.asset_metrics.bytes_read.load(Ordering::Relaxed), "assetBytesHashed": state.asset_metrics.bytes_hashed.load(Ordering::Relaxed), "uploadedBytes": state.asset_metrics.uploaded_bytes.load(Ordering::Relaxed) }
     }))
 }
 
@@ -190,7 +235,16 @@ async fn cloudkit(
     }
     if !matches!(
         operation.as_str(),
-        "zones/list" | "records/modify" | "records/lookup"
+        "zones/list"
+            | "records/modify"
+            | "records/lookup"
+            | "records/query"
+            | "changes/database"
+            | "changes/zone"
+            | "records/changes"
+            | "zones/changes"
+            | "internal/records/query/batch"
+            | "assets/upload"
     ) {
         return if matches!(
             operation.as_str(),
@@ -224,7 +278,15 @@ async fn cloudkit(
     if request.uri().query().is_some() {
         return ApiError::bad_request().into_response();
     }
-    let key = if operation == "records/modify" {
+    let lease = if matches!(operation.as_str(), "records/modify" | "assets/upload") {
+        match leases::proof(request.headers()) {
+            Ok(proof) => Some(proof),
+            Err(error) => return error.into_response(),
+        }
+    } else {
+        None
+    };
+    let key = if matches!(operation.as_str(), "records/modify" | "assets/upload") {
         match records::idempotency_key(request.headers()) {
             Ok(key) => key,
             Err(error) => return error.into_response(),
@@ -232,15 +294,52 @@ async fn cloudkit(
     } else {
         None
     };
-    let value = match read_json(request, state.config.limits.json_body_limit).await {
+    let mut value = match read_json(request, state.config.limits.json_body_limit).await {
         Ok(value) => value,
         Err(error) => return error.into_response(),
     };
+    if let Some(map) = value.as_object_mut() {
+        if let Some(client) = map.remove("clientId")
+            && !client
+                .as_str()
+                .is_some_and(crate::domain::records::identifier)
+        {
+            return ApiError::bad_request().into_response();
+        }
+        if let Some(remap) = map.remove("remapEnums")
+            && !remap.is_boolean()
+        {
+            return ApiError::bad_request().into_response();
+        }
+    }
     if operation == "records/modify" {
-        return records::modify(&state, value, key).await;
+        return records::modify(&state, value, key, lease).await;
     }
     if operation == "records/lookup" {
-        return records::lookup(&state, value).await;
+        return sync::read(&state, "records/lookup", value).await;
+    }
+    if operation == "assets/upload" {
+        return assets::reserve(
+            &state,
+            value,
+            match lease {
+                Some(proof) => proof,
+                None => return ApiError::bad_request().into_response(),
+            },
+            key,
+        )
+        .await;
+    }
+    if matches!(
+        operation.as_str(),
+        "records/query"
+            | "changes/database"
+            | "changes/zone"
+            | "records/changes"
+            | "zones/changes"
+            | "internal/records/query/batch"
+    ) {
+        return sync::read(&state, &operation, value).await;
     }
     if !value.as_object().is_some_and(|map| map.is_empty()) {
         return ApiError::bad_request().into_response();
@@ -322,4 +421,14 @@ async fn unknown() -> Response {
         "Unknown endpoint or container",
     )
     .into_response()
+}
+
+async fn snapshot(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if request.uri().query().is_some() {
+        return ApiError::bad_request().into_response();
+    }
+    match read_json(request, state.config.limits.json_body_limit).await {
+        Ok(value) => sync::read(&state, "snapshots", value).await,
+        Err(error) => error.into_response(),
+    }
 }

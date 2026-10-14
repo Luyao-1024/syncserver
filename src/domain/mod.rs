@@ -1,8 +1,12 @@
+pub mod assets;
+pub mod events;
+pub mod leases;
 pub mod photos;
 pub mod records;
-use serde::Serialize;
+pub(crate) mod sync;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Namespace {
     pub tenant: String,

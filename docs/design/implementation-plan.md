@@ -1,17 +1,17 @@
 # 实施计划与阶段门槛
 
-状态：M0 文档基线与 M1/M2 已建立；上行协调新约束已冻结但未实现；M3–M5 与 C1 待开发。M1/M2 证据见 [M1 基础](m1-foundation.md)、[M2 记录](m2-records.md)。下一步详细任务见[开发任务清单](next-development-tasks.md)。
+状态：M0–M4 基本服务端实现已建立，M5 CI/部署工具已建立；真实公网部署与 C1 另行验收。M1/M2 证据见 [M1 基础](m1-foundation.md)、[M2 记录](m2-records.md)。下一步详细任务见[开发任务清单](next-development-tasks.md)。
 
 | 阶段 | 交付 | 完成证据 |
 |---|---|---|
 | M0 | 需求、分层 AGENTS、架构、兼容、状态机与验收；独立 GitHub 仓库 | 文档链接/JSON/差异检查、推送 SHA |
 | M1（已实现） | Cargo crate、配置、认证、能力声明、SQLite 迁移、启动恢复框架 | 实际 HTTP、范围固定、权限、队列、SIGKILL/SIGTERM 重启测试 |
 | M2（已实现） | 元数据 CRUD、revision 条件、历史、变化索引、operation receipt、照片图校验 | 条件并发、atomic/SQL 回滚、幂等/杀进程恢复和查询计划 |
-| M3-A（下一步） | 公共 token 编解码、共享快照、固定水位 query/lookup、database/zone 增量与墓碑/事件时间 | 分页并发、跨类型同 H、签名/范围、无变化/重启、事件时间 fixture |
-| M3-B | 上行租约/保活/fencing、持锁最新进度门槛、Delete/Modify/Create、metadata 统一守卫、只读提交状态 | 竞争/跳过、锁内补拉、过期中止、旧请求/重启/阶段和幂等确认测试 |
-| M3-C | 协议 aliases/batch、能力声明、服务端与合成双设备协调模拟 | 新约束实际 HTTP、错误矩阵、多端读取、元数据零正文 I/O |
-| M4 | 上传会话与租约/阶段绑定、原图/缩略图、流式摘要、稳定发布/失锁恢复、HEAD/GET/Range | 多 TTL 保活、断线/失锁、去重、角色完整性、正文零读取轮询 |
-| M5 | CI、systemd/容器、部署 smoke、版本发布与客户端接入规范 | exact-SHA CI、实际服务验证 |
+| M3-A（已实现） | 公共 token 编解码、共享快照、固定水位 query/lookup、database/zone 增量与墓碑/事件时间 | 分页并发、跨类型同 H、签名/范围、无变化/重启、事件时间 fixture |
+| M3-B（已实现） | 上行租约/保活/fencing、持锁最新进度门槛、Delete/Modify/Create、metadata 统一守卫、只读提交状态 | 竞争/跳过、锁内补拉、过期中止、旧请求/重启/阶段和幂等确认测试 |
+| M3-C（已实现） | 协议 aliases/batch、能力声明、服务端与合成双设备协调模拟 | 新约束实际 HTTP、错误矩阵、多端读取、元数据零正文 I/O |
+| M4（基本实现） | 上传会话与租约/阶段绑定、原图/缩略图、流式摘要、稳定发布/失锁恢复、HEAD/GET/Range | 多 TTL 保活、断线/失锁、去重、角色完整性、正文零读取轮询 |
+| M5（工具已建立） | CI、systemd/容器、部署 smoke、版本发布与客户端接入规范 | exact-SHA CI、实际服务验证 |
 | C1（后续客户端） | Provider、双资源/缓存发布、DB dirty/回调、先下行→持锁进度→分类上行 | 真实本地 DB 竞争、跳过/失锁逐项结果、UI 全资源门槛与恢复 |
 
 M1–M4 共同构成 v0.1 基本服务端。阶段未完成时 README 保留未实现项；文档冻结不能代替运行测试。C1 只在客户端阶段修改 PhotoViewer，不能用服务端合成客户端模拟声称 C1 已完成。

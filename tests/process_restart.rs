@@ -1,3 +1,4 @@
+mod common;
 use serde_json::Value;
 use std::{
     fs,
@@ -130,14 +131,29 @@ async fn sigkill_during_non_atomic_writes_resumes_receipts_without_duplicate_cha
     let input = json!({"atomic":false,"operations":(0..400).map(|n|json!({"operationType":"create","record":{"recordName":format!("photo-metadata-{n:04}"),"recordType":"Note","fields":{"title":{"type":"STRING","value":"synthetic"}}}})).collect::<Vec<_>>()});
     let endpoint =
         format!("{base}/database/1/com.apple.photos.cloud/production/private/records/modify");
+    let client = reqwest::Client::new();
+    let first_lease =
+        common::ready(&client, &base, KEY, vec![json!({"zoneName":"PrimarySync"})]).await;
+    for phase in ["modify", "create"] {
+        assert_eq!(
+            first_lease
+                .control(&client, &base, KEY, "phase", json!({"phase":phase}))
+                .await
+                .0,
+            200
+        );
+    }
     let sending_input = input.clone();
     let sending_endpoint = endpoint.clone();
     let writing = tokio::spawn(async move {
-        reqwest::Client::new()
-            .post(sending_endpoint)
-            .bearer_auth(KEY)
-            .header("Idempotency-Key", "process-resume")
-            .json(&sending_input)
+        first_lease
+            .headers(
+                reqwest::Client::new()
+                    .post(sending_endpoint)
+                    .bearer_auth(KEY)
+                    .header("Idempotency-Key", "process-resume")
+                    .json(&sending_input),
+            )
             .send()
             .await
     });
@@ -162,11 +178,25 @@ async fn sigkill_during_non_atomic_writes_resumes_receipts_without_duplicate_cha
         original["databaseGeneration"],
         restarted["databaseGeneration"]
     );
-    let response = reqwest::Client::new()
-        .post(endpoint)
-        .bearer_auth(KEY)
-        .header("Idempotency-Key", "process-resume")
-        .json(&input)
+    let replacement =
+        common::ready(&client, &base, KEY, vec![json!({"zoneName":"PrimarySync"})]).await;
+    for phase in ["modify", "create"] {
+        assert_eq!(
+            replacement
+                .control(&client, &base, KEY, "phase", json!({"phase":phase}))
+                .await
+                .0,
+            200
+        );
+    }
+    let response = replacement
+        .headers(
+            reqwest::Client::new()
+                .post(endpoint)
+                .bearer_auth(KEY)
+                .header("Idempotency-Key", "process-resume")
+                .json(&input),
+        )
         .send()
         .await
         .unwrap();

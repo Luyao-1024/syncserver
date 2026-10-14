@@ -1,6 +1,6 @@
 # CloudKit 风格接口兼容契约
 
-状态：M2 已实现 zone 列表、元数据 modify/当前 lookup 与基础接口；快照/变化/资产仍为计划子集。不能用于宣称完整 iCloud 或 CloudKit 兼容。上位规格：[spac.md](../../spac.md)。
+状态：M3/M4 已实现本矩阵的基本子集，实际请求/响应及限制见[实现说明](v0.1-server.md)。不能用于宣称完整 iCloud 或 CloudKit 兼容。上位规格：[spac.md](../../spac.md)。
 
 ## 范围与路径
 
@@ -181,8 +181,8 @@ M1 能力声明逐项列出 false 的快照/记录/变化/资源能力；不生�
 
 snapshots/incrementalChanges/assetUpload/assetDownload/photoPublication=false。records/query、带 snapshotToken 的 lookup 和资源正向发布未开放；M2 不将当前读取冒充跨请求一致清单。M1 小节是上一阶段支持范围的历史记录，不应作为当前 capability 列表。
 
-## 新增上行协调扩展（设计冻结，当前不开放）
+## 新增上行协调扩展（服务端已开放）
 
 [协调契约](../contracts/upload-coordination.md)定义 upload-leases 获取/续租/进度/阶段/释放和只读 operation 状态。它们属于本服务原生扩展，不声称是 Apple 私有协议。M3 实现 token/租约/门槛后统一守卫 records/modify 及所有后续变更入口；M4 会话与上传能力绑定同一 fence。下行 query/lookup/changes/资源读取不持上行锁。
 
-启用时声明 uploadLease/fencing/uploadProgressGate/uploadPhases/operationStatusRead 等能力与实际 TTL/保活参数；只有实现且测试通过才置 true。M2 当前无这些能力、请求头或状态读取入口，本轮仅文档冻结。新阶段只接受同类 operationType 批次，不能把原 M2 混合批次支持保留成跨阶段旁路。
+当前声明 uploadLeases/fencing/tokenCurrentGate/uploadPhases/operationStatusRead 等能力与实际 TTL/保活参数；M2 历史版本没有这些支持。新阶段只接受同类 operationType 批次，不能把原 M2 混合批次支持保留成跨阶段旁路。

@@ -54,6 +54,7 @@ pub struct Field {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
+    pub events: super::events::EditEvents,
     pub name: RecordName,
     pub record_type: String,
     pub zone: ZoneId,
@@ -65,9 +66,9 @@ pub struct Record {
 impl Record {
     pub fn wire(&self) -> Value {
         if self.deleted {
-            json!({"recordName":self.name,"recordType":null,"zoneID":self.zone,"recordChangeTag":self.revision,"deleted":true})
+            json!({"recordName":self.name,"recordType":null,"zoneID":self.zone,"recordChangeTag":self.revision,"deleted":true,"_syncserver":self.events})
         } else {
-            json!({"recordName":self.name,"recordType":self.record_type,"zoneID":self.zone,"recordChangeTag":self.revision,"fields":self.fields})
+            json!({"recordName":self.name,"recordType":self.record_type,"zoneID":self.zone,"recordChangeTag":self.revision,"fields":self.fields,"_syncserver":self.events})
         }
     }
     pub fn is_photo(&self) -> bool {
@@ -146,6 +147,8 @@ impl Failure {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecordInput {
+    #[serde(rename = "_syncserver")]
+    pub events: Option<super::events::EditEvents>,
     pub record_name: String,
     pub record_type: Option<String>,
     #[serde(rename = "zoneID")]
@@ -174,6 +177,8 @@ fn atomic_default() -> bool {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedOperation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<super::events::EditEvents>,
     pub operation_type: String,
     pub record_name: RecordName,
     pub record_type: Option<String>,
@@ -183,6 +188,8 @@ pub struct ResolvedOperation {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Modify {
+    #[serde(skip)]
+    pub(crate) lease: Option<super::leases::LeaseProof>,
     pub(crate) atomic: bool,
     pub(crate) operations: Vec<ResolvedOperation>,
     #[serde(skip)]
@@ -220,7 +227,11 @@ impl ModifyRequest {
             for field in fields.values_mut().flatten() {
                 normalize_reference(field, &zone);
             }
+            if let Some(events) = &op.record.events {
+                events.validate()?;
+            }
             operations.push(ResolvedOperation {
+                events: op.record.events,
                 operation_type: op.operation_type,
                 record_name: RecordName(op.record.record_name),
                 record_type: op.record.record_type,
@@ -233,6 +244,7 @@ impl ModifyRequest {
             return Err(Failure::bad());
         }
         Ok(Modify {
+            lease: None,
             atomic: self.atomic,
             operations,
             idempotency_key: key,
@@ -250,6 +262,7 @@ pub struct LookupItem {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LookupRequest {
+    pub snapshot_token: Option<String>,
     #[serde(rename = "zoneID")]
     pub zone_id: Option<ZoneId>,
     pub records: Vec<LookupItem>,
@@ -257,6 +270,7 @@ pub struct LookupRequest {
 }
 #[derive(Clone, Debug)]
 pub struct Lookup {
+    pub(crate) snapshot_token: Option<String>,
     pub(crate) records: Vec<(ZoneId, RecordName)>,
     pub(crate) desired_keys: Option<BTreeSet<String>>,
 }
@@ -287,6 +301,7 @@ impl LookupRequest {
             return Err(Failure::bad());
         }
         Ok(Lookup {
+            snapshot_token: self.snapshot_token,
             records,
             desired_keys: self.desired_keys.map(|keys| keys.into_iter().collect()),
         })
@@ -409,6 +424,7 @@ pub fn apply(op: &ResolvedOperation, current: Option<&Record>) -> DomainResult<R
                 return Err(Failure::conflict(current));
             }
             Record {
+                events: Default::default(),
                 name: op.record_name.clone(),
                 record_type: op.record_type.clone().unwrap_or_default(),
                 zone: op.zone.clone(),

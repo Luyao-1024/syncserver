@@ -38,7 +38,7 @@ impl ApiError {
         Self::new(
             StatusCode::NOT_IMPLEMENTED,
             "UNSUPPORTED_CAPABILITY",
-            "This capability is not implemented in M2",
+            "This capability is not implemented",
         )
     }
 }
@@ -70,6 +70,7 @@ impl IntoResponse for ApiError {
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         match error {
+            Error::Protocol(error) => Self::from(error),
             Error::Busy => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SERVER_BUSY",

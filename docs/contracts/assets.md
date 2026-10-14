@@ -1,6 +1,6 @@
 # 上传会话、资源描述与下载协议 v1
 
-状态：设计已冻结，HTTP/文件系统验证待 M4。原生扩展 namespace 由 Bearer 账户和配置确定，不能任意传 scope。
+状态：基本 HTTP/流式接收/文件发布/下载与恢复已实现，精确运行边界见[服务端说明](../design/v0.1-server.md)。原生扩展 namespace 由 Bearer 账户和配置确定，不能任意传 scope。
 
 ## 接口
 
@@ -18,7 +18,7 @@
 ## 申请（固定）
 
 ```json
-{"zoneID":{"zoneName":"PrimarySync"},"tokens":[{"recordName":"master-001","recordType":"CPLMaster","fieldName":"resJPEGThumbRes","_syncserver":{"role":"thumbnail","expectedSize":1024,"expectedSha256":"0000000000000000000000000000000000000000000000000000000000000000"}}]}
+{"zoneID":{"zoneName":"PrimarySync"},"tokens":[{"recordName":"master-001","recordType":"CPLMaster","fieldName":"resJPEGThumbRes","_syncserver":{"role":"thumbnail","intent":"create","expectedSize":1024,"expectedSha256":"0000000000000000000000000000000000000000000000000000000000000000"}}]}
 ```
 
 expectedSize 必须正整数且在角色限制内；expectedSha256 为可选小写 64 位十六进制。recordName 和 fieldName 必需，原图 fieldName=resOriginalRes，缩略图=resJPEGThumbRes；未知 role/字段组合拒绝。一个请求最多 200 tokens。
@@ -76,8 +76,8 @@ v0.1 默认原图上限 512 MiB、缩略图上限 2 MiB；原图上限可配置�
 
 资产 receipt 与快照/token 的签名密钥跨重启稳定；密钥轮换或数据库恢复后旧证据可失效，账户通过元数据接口取新证据。URL 不进入日志。所有例子凭证均为合成占位，不能访问真实服务。
 
-## 上行协调新增约束（未实现）
+## 上行协调新增约束（服务端已实现）
 
-所有变更路径附带[上行租约](upload-coordination.md)凭证，上传能力/会话绑定 leaseId/fence。`tokens[]._syncserver` 增加 intent=create/update（对应新增/修改阶段）；预留/续期/正文及 Published 成功确认都在当前代次和阶段内，不能用仍有效的上传 URL 跨越租约失效。现有 fixture 描述合成结构，不能视为 M4 已通过。
+所有变更路径附带[上行租约](upload-coordination.md)凭证，上传能力/会话绑定 leaseId/fence。`tokens[]._syncserver` 增加 intent=create/update（对应新增/修改阶段）；预留/续期/正文及 Published 成功确认都在当前代次和阶段内，不能用仍有效的上传 URL 跨越租约失效。fixture 使用合成数据；真实上传/成对发布/失锁/保活另有运行测试。
 
 会话/资源/receipt 状态 GET 和下载继续无须上行租约。上传完成不直接清本地 dirty，照片记录对的变更结果确认并经有效本地回调后才更新字段。阶段顺序固定删除→修改→新增；入库对象和服务器摘要规则不变。

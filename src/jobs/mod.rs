@@ -14,7 +14,10 @@ pub struct RecoveryReport {
 
 // Metadata recovery checks the database and settles interrupted starts. M4 will add
 // durable asset intents here; never scan/re-hash all published objects.
-pub(crate) fn recover(connection: &mut Connection) -> Result<RecoveryReport> {
+pub(crate) fn recover(
+    connection: &mut Connection,
+    root: &std::path::Path,
+) -> Result<RecoveryReport> {
     let integrity: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if integrity != "ok" {
         return Err(Error::RecoveryFailed);
@@ -25,6 +28,7 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<RecoveryReport> {
     }
     let run_id = Uuid::new_v4();
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute("UPDATE upload_lease SET fence=fence+1,lease_id=NULL,device_id=NULL,zones_json=NULL,deadline_tick_ms=NULL,expires_at_ms=NULL,phase=NULL,verified_head=NULL WHERE namespace_id=1",[])?;
     let interrupted = tx.execute(
         "UPDATE service_starts SET state='Interrupted' WHERE state IN ('Recovering','Ready')",
         [],
@@ -34,13 +38,14 @@ pub(crate) fn recover(connection: &mut Connection) -> Result<RecoveryReport> {
         params![run_id.to_string(), now_ms()?],
     )?;
     tx.commit()?;
+    let (asset_bytes_read, asset_bytes_hashed) = crate::assets::recover(connection, root)?;
     // Recovery phase boundary is durable before the service becomes Ready.
     connection.execute("UPDATE service_starts SET state='Ready', recovered_at_ms=?2 WHERE run_id=?1 AND state='Recovering'", params![run_id.to_string(), now_ms()?])?;
     Ok(RecoveryReport {
         run_id,
         interrupted_starts: interrupted as u64,
-        asset_bytes_read: 0,
-        asset_bytes_hashed: 0,
+        asset_bytes_read,
+        asset_bytes_hashed,
     })
 }
 
@@ -53,10 +58,15 @@ pub(crate) fn finish(connection: &mut Connection, run_id: Uuid) -> Result<()> {
     Ok(())
 }
 
-fn now_ms() -> Result<i64> {
+pub(crate) fn now_ms() -> Result<i64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|time| i64::try_from(time.as_millis()).ok())
         .ok_or(Error::RecoveryFailed)
+}
+
+pub(crate) fn expire_sessions(connection: &mut Connection) -> Result<()> {
+    connection.execute("UPDATE upload_sessions SET state='Expired',error='UPLOAD_EXPIRED' WHERE namespace_id=1 AND state='Reserved' AND expires_at_ms<=?1",[now_ms()?])?;
+    Ok(())
 }

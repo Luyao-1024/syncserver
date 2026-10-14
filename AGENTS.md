@@ -1,6 +1,6 @@
 # Agent Guide
 
-本仓库是独立的 Rust 照片同步服务端。M1/M2 已建立 Rust 启动、元数据基础及记录事务；具体实现范围以用户最新阶段指令为准。不要把计划写成已实现、不要擅自改动相邻 PhotoViewer 仓库。
+本仓库是独立的 Rust 照片同步服务端。基本服务端已建立 token/快照/增量、租约、记录、双资源与恢复；具体实现范围以用户最新阶段指令为准。不要把计划写成已实现、不要擅自改动相邻 PhotoViewer 仓库。
 
 ## 开始工作
 
@@ -31,4 +31,4 @@
 
 ## 新上行协调开发入口
 
-先读[上行协调契约](docs/contracts/upload-coordination.md)与[下一步任务](docs/design/next-development-tasks.md)。当前它们只冻结文档，M2 尚未实现。新变更入口必须统一租约/fence/最新进度/阶段，旧 alias 不能绕过；阶段为删除→修改→新增。dirty 为本地既有 DB 字段，禁止独立 dirty 文件/台账/持久队列，失败/跳过/失锁不清，成功回调需检查本地版本/轮次。
+先读[上行协调契约](docs/contracts/upload-coordination.md)与[下一步任务](docs/design/next-development-tasks.md)。服务端已实现 M3/M4，当前行为/证据见 docs/design/v0.1-server.md，客户端 C1 尚未接入。新变更入口必须统一租约/fence/最新进度/阶段，旧 alias 不能绕过；阶段为删除→修改→新增。dirty 为本地既有 DB 字段，禁止独立 dirty 文件/台账/持久队列，失败/跳过/失锁不清，成功回调需检查本地版本/轮次。

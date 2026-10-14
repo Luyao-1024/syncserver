@@ -1,6 +1,6 @@
 # 验证计划
 
-状态：M1/M2 测试已加入；完整同步场景待后续阶段。M1 执行证据见 [M1 基础](m1-foundation.md)。对应[spac.md 的 A01–A23](../../spac.md)。
+状态：M3/M4 基本服务端已有 token/分页/租约/文件/HTTP/恢复/合成接收测试；真实 PhotoViewer/C1 和公网部署另行验证。M1 执行证据见 [M1 基础](m1-foundation.md)。对应[spac.md 的 A01–A23](../../spac.md)。
 
 ## 文档阶段
 
@@ -91,3 +91,9 @@ M1 的正文计数为 0 是尚无资产操作的事实，未满足 A01 的上传
 10. 正常重启 fence 增长/旧租约失效，但同步 token/generation 正常保留；租约/续租不进入媒体 changes 或读取正文。
 
 本次只修改设计/JSON fixture，不执行 Rust 或 HTTP 测试；新增行为不能借用之前 M2 的 35 个测试宣称已通过。
+
+## 当前基本服务端验证
+
+最终代码树执行完整 fmt/clippy/build/test；当前 58 个测试通过、无失败或忽略。新增 sync_http/leases_http/assets_http 与资产恢复单元测试验证固定水位、事件时间、别名/batch、字节预算、抢锁/持锁追平/单调过期、重启 fence、原图/缩略图真实上传与配对、100 次空变化/HEAD 零正文成本、Range/条件、失锁长流中止、跨多个 TTL 保活、持久接收事务失败/重启/双资源待办。既有 SIGKILL/nonatomic 恢复在新租约 fixture 下继续运行。
+
+容器构建、smoke 和 exact-SHA CI 的结果以交付记录为准，不将模板或未执行命令记作通过。旧 M1/M2 小节保留为阶段历史。

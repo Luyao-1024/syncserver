@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 pub(crate) struct Credentials {
     api_digest: [u8; 32],
     pub signing_fingerprint: [u8; 32],
+    pub tokens: std::sync::Arc<crate::tokens::TokenCodec>,
 }
 
 impl Credentials {
@@ -35,6 +36,11 @@ impl Credentials {
             .map_err(|_| Error::Config("invalid signing key"))?;
         mac.update(b"syncserver/key-fingerprint/v1");
         Ok(Self {
+            tokens: std::sync::Arc::new(crate::tokens::TokenCodec::new(
+                key.as_slice()
+                    .try_into()
+                    .map_err(|_| Error::Config("invalid signing key"))?,
+            )),
             api_digest: Sha256::digest(api.as_bytes()).into(),
             signing_fingerprint: mac.finalize().into_bytes().into(),
         })

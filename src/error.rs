@@ -5,6 +5,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 // Messages deliberately exclude filesystem paths, SQL, and credential contents.
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("PROTOCOL_ERROR: {0:?}")]
+    Protocol(crate::domain::records::Failure),
     #[error("CONFIG_INVALID: {0}")]
     Config(&'static str),
     #[error("CONFIG_SCOPE_MISMATCH: namespace or zone set differs from the existing database")]
@@ -37,5 +39,11 @@ impl From<std::io::Error> for Error {
 impl From<rusqlite::Error> for Error {
     fn from(value: rusqlite::Error) -> Self {
         Self::Database(value)
+    }
+}
+
+impl From<crate::domain::records::Failure> for Error {
+    fn from(value: crate::domain::records::Failure) -> Self {
+        Self::Protocol(value)
     }
 }

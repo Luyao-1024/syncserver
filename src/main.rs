@@ -33,7 +33,7 @@ async fn run() -> Result<()> {
             return Err(error.into());
         }
     };
-    tracing::info!(address = %listener.local_addr()?, stage = "M2", "service ready");
+    tracing::info!(address = %listener.local_addr()?, stage = "M4", "service ready");
     server
         .serve(listener, async move {
             tokio::select! {

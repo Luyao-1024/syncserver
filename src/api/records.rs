@@ -1,5 +1,5 @@
 use super::{AppState, error::ApiError};
-use crate::domain::records::{LookupRequest, ModifyRequest};
+use crate::domain::records::ModifyRequest;
 use axum::{
     Json,
     http::{HeaderMap, StatusCode},
@@ -24,34 +24,22 @@ pub(super) fn idempotency_key(
     }
     Ok(key)
 }
-pub(super) async fn modify(state: &AppState, value: Value, key: Option<String>) -> Response {
+pub(super) async fn modify(
+    state: &AppState,
+    value: Value,
+    key: Option<String>,
+    lease: Option<crate::domain::leases::LeaseProof>,
+) -> Response {
     let request = match serde_json::from_value::<ModifyRequest>(value) {
         Ok(request) => request,
         Err(_) => return ApiError::bad_request().into_response(),
     };
-    let request = match request.prepare(key) {
+    let mut request = match request.prepare(key) {
         Ok(request) => request,
         Err(error) => return ApiError::from(error).into_response(),
     };
+    request.lease = lease;
     match state.store.modify(request).await {
-        Ok(result) => (
-            StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            Json(result.body),
-        )
-            .into_response(),
-        Err(error) => ApiError::from(error).into_response(),
-    }
-}
-pub(super) async fn lookup(state: &AppState, value: Value) -> Response {
-    let request = match serde_json::from_value::<LookupRequest>(value) {
-        Ok(request) => request,
-        Err(_) => return ApiError::bad_request().into_response(),
-    };
-    let request = match request.prepare() {
-        Ok(request) => request,
-        Err(error) => return ApiError::from(error).into_response(),
-    };
-    match state.store.lookup(request).await {
         Ok(result) => (
             StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             Json(result.body),

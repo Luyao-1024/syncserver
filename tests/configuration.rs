@@ -1,4 +1,3 @@
-#[allow(dead_code)] // This test crate only uses the configuration fixtures.
 mod common;
 use std::{
     fs,
@@ -42,6 +41,8 @@ fn configuration_rejects_unsafe_urls_ranges_names_and_missing_keys() {
         ("SYNC_DOWNLOAD_CONCURRENCY", "-1"),
         ("SYNC_UPLOAD_IDLE_TIMEOUT_SECS", "3601"),
         ("SYNC_UPLOAD_TOTAL_TIMEOUT_SECS", "0"),
+        ("SYNC_UPLOAD_TOTAL_TIMEOUT_SECS", "18446744073709551615"),
+        ("SYNC_UPLOAD_IDLE_TIMEOUT_SECS", "18446744073709551615"),
         ("SYNC_DB_QUEUE_CAPACITY", "0"),
         ("SYNC_JSON_BODY_LIMIT", "1.5"),
         ("SYNC_JSON_BODY_LIMIT", "18446744073709551616"),
@@ -134,4 +135,35 @@ async fn symlink_and_shared_data_directories_are_rejected_without_touching_targe
         fs::read(outside.join("sentinel")).unwrap(),
         b"do not modify"
     );
+}
+
+#[test]
+fn upload_control_defaults_and_heartbeat_bounds_are_explicit() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = common::config(root.path());
+    assert_eq!(cfg.limits().lease_ttl_secs, 90);
+    assert_eq!(cfg.limits().lease_heartbeat_secs, 30);
+    assert_eq!(cfg.limits().control_queue_capacity, 16);
+    for pairs in [
+        [
+            ("SYNC_LEASE_TTL_SECS", "30"),
+            ("SYNC_LEASE_HEARTBEAT_SECS", "30"),
+        ],
+        [
+            ("SYNC_LEASE_TTL_SECS", "86401"),
+            ("SYNC_LEASE_HEARTBEAT_SECS", "30"),
+        ],
+        [
+            ("SYNC_LEASE_TTL_SECS", "0"),
+            ("SYNC_LEASE_HEARTBEAT_SECS", "1"),
+        ],
+    ] {
+        let mut config = vec![
+            ("SYNC_DATA_DIR", "/unused/data"),
+            ("SYNC_API_KEY_FILE", "/unused/api"),
+            ("SYNC_SIGNING_KEY_FILE", "/unused/signing"),
+        ];
+        config.extend(pairs);
+        assert!(syncserver::Config::from_pairs(config).is_err());
+    }
 }

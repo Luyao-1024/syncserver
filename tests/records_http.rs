@@ -4,6 +4,9 @@ use serde_json::{Value, json};
 
 const BASE: &str = "/database/1/com.apple.photos.cloud/production/private";
 async fn post(app: &Running, operation: &str, body: Value, key: Option<&str>) -> (u16, Value) {
+    if operation == "records/modify" {
+        return common::fixture_modify(app, body, key).await;
+    }
     let mut request = app
         .client
         .post(format!("{}{BASE}/{operation}", app.base))
@@ -119,40 +122,41 @@ async fn generic_crud_patches_fields_checks_revisions_and_retires_names() {
 #[tokio::test]
 async fn atomic_failures_roll_back_every_operation_and_non_atomic_returns_ordered_items() {
     let app = Running::new().await;
-    let (status, _) = post(
+    let (_, existing) = post(
         &app,
         "records/modify",
-        json!({"operations":[create("new"), update("missing", &json!("tag"))]}),
-        Some("failed-batch"),
-    )
-    .await;
-    assert_eq!(status, 404);
-    assert_eq!(lookup(&app, "new").await["serverErrorCode"], "UNKNOWN_ITEM");
-    let (status, body) = post(&app, "records/modify", json!({"atomic":false,"operations":[create("new"),update("missing", &json!("tag")),create("second")]}), Some("partial-batch")).await;
-    assert_eq!(status, 200);
-    assert_eq!(body["records"][0]["recordName"], "new");
-    assert_eq!(body["records"][1]["serverErrorCode"], "UNKNOWN_ITEM");
-    assert_eq!(body["records"][2]["recordName"], "second");
-    let (status, replay) = post(&app, "records/modify", json!({"atomic":false,"operations":[create("new"),update("missing", &json!("tag")),create("second")]}), Some("partial-batch")).await;
-    assert_eq!(status, 200);
-    assert_eq!(replay, body);
-    let (status, _) = post(
-        &app,
-        "records/modify",
-        json!({"operations":[create("duplicate"),create("duplicate")]}),
+        json!({"operations":[create("existing")]}),
         None,
     )
     .await;
-    assert_eq!(status, 400);
+    let (status, _) = post(
+        &app,
+        "records/modify",
+        json!({"operations":[create("new"),create("existing")]}),
+        Some("failed-batch"),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(lookup(&app, "new").await["serverErrorCode"], "UNKNOWN_ITEM");
+    let input =
+        json!({"atomic":false,"operations":[create("new"),create("existing"),create("second")]});
+    let (status, body) = post(&app, "records/modify", input.clone(), Some("partial-batch")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["records"][0]["recordName"], "new");
+    assert_eq!(body["records"][1]["serverErrorCode"], "CONFLICT");
+    assert_eq!(body["records"][2]["recordName"], "second");
     assert_eq!(
-        lookup(&app, "duplicate").await["serverErrorCode"],
-        "UNKNOWN_ITEM"
+        post(&app, "records/modify", input, Some("partial-batch"))
+            .await
+            .1,
+        body
     );
+    assert_eq!(lookup(&app, "existing").await, existing["records"][0]);
     app.stop().await;
 }
 
 #[tokio::test]
-async fn concurrent_update_and_delete_commit_exactly_one_and_expose_current_conflict() {
+async fn concurrent_updates_under_one_lease_commit_exactly_one_and_expose_current_conflict() {
     let app = Running::new().await;
     let (_, body) = post(
         &app,
@@ -162,19 +166,40 @@ async fn concurrent_update_and_delete_commit_exactly_one_and_expose_current_conf
     )
     .await;
     let tag = &body["records"][0]["recordChangeTag"];
-    let (a, b) = tokio::join!(
-        post(
-            &app,
-            "records/modify",
-            json!({"operations":[update("race",tag)]}),
-            None
-        ),
-        post(
-            &app,
-            "records/modify",
-            json!({"operations":[delete("race",tag)]}),
-            None
+    let lease = common::ready(
+        &app.client,
+        &app.base,
+        API_KEY,
+        vec![json!({"zoneName":"PrimarySync"})],
+    )
+    .await;
+    assert_eq!(
+        lease
+            .control(
+                &app.client,
+                &app.base,
+                API_KEY,
+                "phase",
+                json!({"phase":"modify"})
+            )
+            .await
+            .0,
+        200
+    );
+    let request = || {
+        lease.headers(
+            app.client
+                .post(format!("{}{BASE}/records/modify", app.base))
+                .bearer_auth(API_KEY)
+                .json(&json!({"operations":[update("race",tag)]})),
         )
+    };
+    let (a, b) = tokio::join!(request().send(), request().send());
+    let a = a.unwrap();
+    let b = b.unwrap();
+    let (a, b) = (
+        (a.status().as_u16(), a.json::<Value>().await.unwrap()),
+        (b.status().as_u16(), b.json::<Value>().await.unwrap()),
     );
     assert!(
         (a.0 == 200 && b.0 == 409) || (a.0 == 409 && b.0 == 200),
@@ -286,9 +311,9 @@ async fn validation_scope_lookup_projection_and_capability_boundaries() {
         .json()
         .await
         .unwrap();
-    assert_eq!(capabilities["stage"], "M2");
+    assert_eq!(capabilities["stage"], "M4");
     assert_eq!(capabilities["capabilities"]["recordCrud"], true);
-    assert_eq!(capabilities["capabilities"]["snapshots"], false);
+    assert_eq!(capabilities["capabilities"]["snapshots"], true);
     app.stop().await;
 }
 
@@ -300,11 +325,19 @@ async fn photo_pairs_cannot_be_split_or_publish_untrusted_descriptors() {
     let request = &fixtures["createPhotoRequest"];
     for op in request["operations"].as_array().unwrap() {
         let (_, body) = post(&app, "records/modify", json!({"operations":[op]}), None).await;
-        assert_eq!(body["serverErrorCode"], "PHOTO_PAIR_REQUIRED", "{body}");
+        assert_eq!(
+            body["serverErrorCode"],
+            if op["record"]["recordType"] == "CPLMaster" {
+                "UNKNOWN_ITEM"
+            } else {
+                "PHOTO_PAIR_REQUIRED"
+            },
+            "{body}"
+        );
     }
     let (status, body) = post(&app, "records/modify", request.clone(), None).await;
-    assert_eq!(status, 501, "{body}");
-    assert_eq!(body["serverErrorCode"], "UNSUPPORTED_CAPABILITY");
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["serverErrorCode"], "UNKNOWN_ITEM");
     assert_eq!(
         lookup(&app, "photo-001").await["serverErrorCode"],
         "UNKNOWN_ITEM"
@@ -313,7 +346,14 @@ async fn photo_pairs_cannot_be_split_or_publish_untrusted_descriptors() {
     request["atomic"] = json!(false);
     let (_, body) = post(&app, "records/modify", request, None).await;
     for record in body["records"].as_array().unwrap() {
-        assert_eq!(record["serverErrorCode"], "PHOTO_PAIR_REQUIRED");
+        assert_eq!(
+            record["serverErrorCode"],
+            if record["recordName"] == "master-001" {
+                "UNKNOWN_ITEM"
+            } else {
+                "PHOTO_PAIR_REQUIRED"
+            }
+        );
     }
     app.stop().await;
 }
@@ -365,16 +405,25 @@ async fn idempotency_is_canonical_concurrent_persistent_and_binds_complete_reque
 #[tokio::test]
 async fn duplicate_json_keys_invalid_idempotency_headers_and_batch_limits_are_rejected() {
     let app = Running::new().await;
+    let raw_lease = common::ready(
+        &app.client,
+        &app.base,
+        API_KEY,
+        vec![json!({"zoneName":"PrimarySync"})],
+    )
+    .await;
     for body in [
         "{\"operations\":[],\"operations\":[]}",
         "{\"operations\":[{\"operationType\":\"create\",\"record\":{\"recordName\":\"dup\",\"recordType\":\"Note\",\"fields\":{\"a\":{\"type\":\"STRING\",\"value\":\"first\",\"value\":\"second\"}}}}]}",
     ] {
-        let response = app
-            .client
-            .post(format!("{}{BASE}/records/modify", app.base))
-            .bearer_auth(API_KEY)
-            .header("Content-Type", "text/plain")
-            .body(body)
+        let response = raw_lease
+            .headers(
+                app.client
+                    .post(format!("{}{BASE}/records/modify", app.base))
+                    .bearer_auth(API_KEY)
+                    .header("Content-Type", "text/plain")
+                    .body(body),
+            )
             .send()
             .await
             .unwrap();
@@ -389,6 +438,13 @@ async fn duplicate_json_keys_invalid_idempotency_headers_and_batch_limits_are_re
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
+    assert_eq!(
+        raw_lease
+            .control(&app.client, &app.base, API_KEY, "release", json!({}))
+            .await
+            .0,
+        200
+    );
     let body = json!({"operations":[create("headers")]});
     for key in ["", "bad key", &"a".repeat(129)] {
         assert_eq!(
@@ -398,17 +454,33 @@ async fn duplicate_json_keys_invalid_idempotency_headers_and_batch_limits_are_re
             400
         );
     }
-    let response = app
-        .client
-        .post(format!("{}{BASE}/records/modify", app.base))
-        .bearer_auth(API_KEY)
-        .header("Idempotency-Key", "one")
-        .header("Idempotency-Key", "two")
-        .json(&body)
+    let headers_lease = common::ready(
+        &app.client,
+        &app.base,
+        API_KEY,
+        vec![json!({"zoneName":"PrimarySync"})],
+    )
+    .await;
+    let response = headers_lease
+        .headers(
+            app.client
+                .post(format!("{}{BASE}/records/modify", app.base))
+                .bearer_auth(API_KEY)
+                .header("Idempotency-Key", "one")
+                .header("Idempotency-Key", "two")
+                .json(&body),
+        )
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
+    assert_eq!(
+        headers_lease
+            .control(&app.client, &app.base, API_KEY, "release", json!({}))
+            .await
+            .0,
+        200
+    );
     let too_many =
         json!({"operations":(0..401).map(|n|create(&format!("note-{n}"))).collect::<Vec<_>>()});
     assert_eq!(post(&app, "records/modify", too_many, None).await.0, 413);

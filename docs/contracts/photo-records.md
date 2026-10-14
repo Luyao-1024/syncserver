@@ -1,6 +1,6 @@
 # 照片记录、字段与引用生命周期 v1
 
-状态：设计已冻结，M2 已实现最终图规则与元数据约束；真实资产正向绑定/发布待 M4。JSON 样例见[fixtures](fixtures.json)中的 photoPair 与 createPhotoRequest。
+状态：M4 已实现可信资产与原图/缩略图成对正向绑定，包含真实 HTTP/文件测试；M2 历史验证边界保留在对应小节。JSON 样例见[fixtures](fixtures.json)中的 photoPair 与 createPhotoRequest。
 
 ## 一对一身份
 

@@ -18,6 +18,9 @@ pub struct Limits {
     pub upload_total_timeout_secs: u64,
     pub db_queue_capacity: usize,
     pub json_body_limit: usize,
+    pub lease_ttl_secs: u64,
+    pub lease_heartbeat_secs: u64,
+    pub control_queue_capacity: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +51,9 @@ const KEYS: &[&str] = &[
     "SYNC_UPLOAD_TOTAL_TIMEOUT_SECS",
     "SYNC_DB_QUEUE_CAPACITY",
     "SYNC_JSON_BODY_LIMIT",
+    "SYNC_LEASE_TTL_SECS",
+    "SYNC_LEASE_HEARTBEAT_SECS",
+    "SYNC_CONTROL_QUEUE_CAPACITY",
 ];
 
 impl Config {
@@ -153,7 +159,22 @@ impl Config {
             upload_total_timeout_secs: number("SYNC_UPLOAD_TOTAL_TIMEOUT_SECS", 3600)?,
             db_queue_capacity: sized("SYNC_DB_QUEUE_CAPACITY", 128)?,
             json_body_limit: sized("SYNC_JSON_BODY_LIMIT", 1048576)?,
+            lease_ttl_secs: number("SYNC_LEASE_TTL_SECS", 90)?,
+            lease_heartbeat_secs: number("SYNC_LEASE_HEARTBEAT_SECS", 30)?,
+            control_queue_capacity: sized("SYNC_CONTROL_QUEUE_CAPACITY", 16)?,
         };
+        if limits.lease_heartbeat_secs >= limits.lease_ttl_secs || limits.lease_ttl_secs > 86400 {
+            return Err(Error::Config(
+                "lease heartbeat must be below TTL and TTL must not exceed 24 hours",
+            ));
+        }
+        if limits.upload_idle_timeout_secs > u32::MAX as u64
+            || limits.upload_total_timeout_secs > u32::MAX as u64
+        {
+            return Err(Error::Config(
+                "upload timeouts exceed implementation bounds",
+            ));
+        }
         if limits.thumbnail_max_bytes > 2097152
             || limits.max_asset_bytes > i64::MAX as u64
             || limits.upload_total_timeout_secs < limits.upload_idle_timeout_secs
@@ -172,6 +193,10 @@ impl Config {
             zones: zones.into_iter().collect(),
             limits,
         })
+    }
+
+    pub fn limits(&self) -> &Limits {
+        &self.limits
     }
 
     pub fn bind_address(&self) -> SocketAddr {

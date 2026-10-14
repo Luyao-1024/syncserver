@@ -16,6 +16,7 @@ fn fixture() -> (Vec<Record>, Value) {
         .map(|operation| {
             let op = operation;
             Record {
+                events: Default::default(),
                 name: records::RecordName(op.record.record_name.clone()),
                 record_type: op.record.record_type.clone().unwrap(),
                 zone: op.record.zone_id.clone().unwrap_or_default(),
@@ -39,6 +40,7 @@ fn operations(request: Value) -> Vec<records::ResolvedOperation> {
         .operations
         .into_iter()
         .map(|operation| records::ResolvedOperation {
+            events: None,
             operation_type: operation.operation_type,
             record_name: records::RecordName(operation.record.record_name),
             record_type: operation.record.record_type,

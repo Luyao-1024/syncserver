@@ -1,6 +1,6 @@
 # 安全、配置与部署
 
-状态：M1/M2 已实现配置、文件权限、Bearer、记录范围与数据目录锁；部署样例和同步凭证发行仍待后续阶段。
+状态：认证/权限/scope、签名读 token、租约与资源能力已实现，部署配置已建立；实际公网部署另行验收。
 
 ## 首版身份
 
@@ -31,9 +31,12 @@
 | SYNC_THUMBNAIL_MAX_BYTES | 默认 2097152，v0.1 不可超过 2 MiB |
 | SYNC_UPLOAD_CONCURRENCY | 默认 2，必须正整数 |
 | SYNC_DOWNLOAD_CONCURRENCY | 默认 8，必须正整数 |
-| SYNC_UPLOAD_IDLE_TIMEOUT_SECS | 默认 30，必须正整数 |
-| SYNC_UPLOAD_TOTAL_TIMEOUT_SECS | 默认 3600，必须正整数 |
+| SYNC_UPLOAD_IDLE_TIMEOUT_SECS | 默认 30，必须为 u32 范围的正整数 |
+| SYNC_UPLOAD_TOTAL_TIMEOUT_SECS | 默认 3600，必须为 u32 范围的正整数 |
 | SYNC_DB_QUEUE_CAPACITY | 默认 128，必须正整数 |
+| SYNC_LEASE_TTL_SECS | 默认 90，1–86400 秒；heartbeat 必须小于 TTL |
+| SYNC_LEASE_HEARTBEAT_SECS | 默认 30，客户端推荐保活周期 |
+| SYNC_CONTROL_QUEUE_CAPACITY | 默认 16，独立控制 HTTP/数据库配额 |
 | SYNC_JSON_BODY_LIMIT | 默认 1048576（1 MiB），必须正整数 |
 
 数值和 URL 在启动时校验。SYNC_BIND 非 loopback 时 public base 必须为 HTTPS，不能使用默认 HTTP 回环地址充当公开配置。没有密钥、不可写目录或公开 URL 错误时启动失败，不降级为无认证服务。上述 v1 默认值已固定，M1 配置测试和能力声明返回实际配置；变更需同步契约。namespace 与 zone 集合在初始化后固定，顺序调整不算集合变化；不一致按 CONFIG_SCOPE_MISMATCH 拒绝启动。

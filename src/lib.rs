@@ -1,12 +1,13 @@
-//! M2 record transactions on the durable M1 startup and metadata foundation.
-//! Snapshot/change feeds and trusted asset publication remain later milestones.
+//! Incremental photo metadata, fenced upload leases and immutable paired resources.
 mod api;
+mod assets;
 mod config;
 mod credentials;
 pub mod domain;
 mod error;
 pub mod jobs;
 pub mod store;
+mod tokens;
 
 pub use config::{Config, Limits};
 pub use error::{Error, Result};
@@ -31,7 +32,12 @@ impl Server {
         })
         .await
         .map_err(|_| Error::WorkerFailed)??;
-        let store = store::Store::open(config.clone(), credentials.signing_fingerprint).await?;
+        let store = store::Store::open(
+            config.clone(),
+            credentials.signing_fingerprint,
+            credentials.tokens.clone(),
+        )
+        .await?;
         Ok(Self {
             state: Arc::new(api::AppState::new(config, credentials, store)),
         })

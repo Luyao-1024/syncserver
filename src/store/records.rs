@@ -20,22 +20,27 @@ pub struct Outcome {
     pub body: Value,
 }
 impl Outcome {
-    fn failure(failure: Failure) -> Self {
+    pub(crate) fn failure(failure: Failure) -> Self {
         Self {
             status: failure.status,
             body: failure.wire(),
         }
     }
-    fn success(body: Value) -> Self {
+    pub(crate) fn success(body: Value) -> Self {
         Self { status: 200, body }
     }
 }
 
-fn load(connection: &Connection, zone: &ZoneId, name: &RecordName) -> Result<Option<Record>> {
-    let row=connection.query_row("SELECT record_type, revision, seq, fields_json, deleted FROM records WHERE namespace_id=1 AND zone_name=?1 AND record_name=?2",
-        params![zone.zone_name,name.0], |row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,bool>(4)?))).optional()?;
-    row.map(|(record_type, revision, seq, fields, deleted)| {
+pub(crate) fn load(
+    connection: &Connection,
+    zone: &ZoneId,
+    name: &RecordName,
+) -> Result<Option<Record>> {
+    let row=connection.query_row("SELECT record_type, revision, seq, fields_json, deleted, events_json FROM records WHERE namespace_id=1 AND zone_name=?1 AND record_name=?2",
+        params![zone.zone_name,name.0], |row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,bool>(4)?,row.get::<_,String>(5)?))).optional()?;
+    row.map(|(record_type, revision, seq, fields, deleted, events)| {
         Ok(Record {
+            events: serde_json::from_str(&events).map_err(|_| Error::RecoveryFailed)?,
             name: name.clone(),
             record_type,
             zone: zone.clone(),
@@ -62,6 +67,9 @@ fn bounded(value: &Value) -> Result<bool> {
 }
 
 pub(crate) fn lookup(connection: &mut Connection, lookup: Lookup) -> Result<Outcome> {
+    if lookup.snapshot_token.is_some() {
+        return Ok(Outcome::failure(Failure::unsupported()));
+    }
     let tx = connection.transaction()?;
     let mut results = Vec::new();
     let mut bytes = 0usize;
@@ -90,7 +98,26 @@ pub(crate) fn lookup(connection: &mut Connection, lookup: Lookup) -> Result<Outc
 }
 
 fn fingerprint(request: &Modify) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(request).map_err(|_| Error::RecoveryFailed)?;
+    let mut logical = serde_json::to_value(request).map_err(|_| Error::RecoveryFailed)?;
+    if let Some(operations) = logical["operations"].as_array_mut() {
+        for operation in operations {
+            if let Some(fields) = operation["fields"].as_object_mut() {
+                for field in fields.values_mut() {
+                    if field.get("type").and_then(Value::as_str) == Some("ASSETID")
+                        && let Some(value) = field["value"].as_object_mut()
+                    {
+                        value.retain(|key, _| {
+                            matches!(
+                                key.as_str(),
+                                "assetId" | "size" | "fileChecksum" | "checksumAlgorithm"
+                            )
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let bytes = serde_json::to_vec(&logical).map_err(|_| Error::RecoveryFailed)?;
     let mut hasher = Sha256::new();
     hasher.update(b"syncserver/record-operation/v1\0");
     hasher.update(bytes);
@@ -132,7 +159,46 @@ fn save_receipt(
     Ok(())
 }
 
-pub(crate) fn modify(connection: &mut Connection, request: Modify) -> Result<Outcome> {
+pub(crate) fn modify(
+    connection: &mut Connection,
+    mut request: Modify,
+    guard: &super::leases::Guard<'_>,
+) -> Result<Outcome> {
+    guard.mutation(connection, &request)?;
+    let mut input_errors = Vec::new();
+    for op in &mut request.operations {
+        let mut fields = op
+            .fields
+            .iter()
+            .filter_map(|(name, field)| field.clone().map(|field| (name.clone(), field)))
+            .collect();
+        let error = match super::assets::normalize(connection, &mut fields, guard) {
+            Ok(()) => None,
+            Err(Error::Protocol(error)) => Some(error),
+            Err(error) => return Err(error),
+        };
+        if request.atomic {
+            if let Some(error) = error {
+                return Ok(Outcome::failure(error));
+            }
+            input_errors.push(None);
+        } else {
+            input_errors.push(error);
+        }
+        // Temporary transport credentials do not identify a logical operation,
+        // including a child rejected before it can become a record version.
+        for field in fields.values_mut() {
+            if field.kind == "ASSETID"
+                && let Some(value) = field.value.as_object_mut()
+            {
+                value.remove("receipt");
+                value.remove("downloadURL");
+            }
+        }
+        for (name, field) in fields {
+            op.fields.insert(name, Some(field));
+        }
+    }
     let hash = fingerprint(&request)?;
     let key = request.idempotency_key.as_deref();
     if let Some(key) = key {
@@ -149,19 +215,30 @@ pub(crate) fn modify(connection: &mut Connection, request: Modify) -> Result<Out
         let cached = key
             .map(|key| receipt(connection, key, index as i64, &hash))
             .transpose()?;
-        let bytes = match cached {
-            Some(Ok(Some(value))) => serde_json::to_vec(&value)
-                .map_err(|_| Error::RecoveryFailed)?
-                .len(),
+        let value = match cached {
+            Some(Ok(Some(value))) => value,
             Some(Err(error)) => return Ok(Outcome::failure(error)),
             _ => {
-                let current:Option<i64>=connection.query_row("SELECT length(CAST(fields_json AS BLOB)) FROM records WHERE namespace_id=1 AND zone_name=?1 AND record_name=?2",params![op.zone.zone_name,op.record_name.0],|row|row.get(0)).optional()?;
-                current.unwrap_or(0) as usize
-                    + serde_json::to_vec(&op.fields)
-                        .map_err(|_| Error::RecoveryFailed)?
-                        .len()
-                    + 4096
+                let bytes:Option<i64>=connection.query_row("SELECT length(CAST(fields_json AS BLOB)) FROM records WHERE namespace_id=1 AND zone_name=?1 AND record_name=?2",params![op.zone.zone_name,op.record_name.0],|row|row.get(0)).optional()?;
+                if budget.saturating_add(bytes.unwrap_or(0) as usize) > MAX_RESULT_BYTES {
+                    return Ok(Outcome::failure(Failure::limit()));
+                }
+                if let Some(error) = &input_errors[index] {
+                    error.item(&op.record_name.0, &op.zone)
+                } else {
+                    let current = load(connection, &op.zone, &op.record_name)?;
+                    match records::apply(op, current.as_ref()) {
+                        Ok(record) => record.wire(),
+                        Err(error) => error.item(&op.record_name.0, &op.zone),
+                    }
+                }
             }
+        };
+        let mut preview = value;
+        let bytes = match super::assets::render_bounded(connection, &mut preview, guard) {
+            Ok(size) => size + 4096,
+            Err(Error::Protocol(f)) => return Ok(Outcome::failure(f)),
+            Err(e) => return Err(e),
         };
         budget = budget.saturating_add(bytes);
         if budget > MAX_RESULT_BYTES {
@@ -181,11 +258,13 @@ pub(crate) fn modify(connection: &mut Connection, request: Modify) -> Result<Out
         if let Some(key) = key {
             save_receipt(&tx, key, -1, &hash, Some(&result))?;
         }
+        guard.mutation(&tx, &request)?;
         tx.commit()?;
         return Ok(Outcome::success(result));
     }
     if let Some(key) = key {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        guard.mutation(&tx, &request)?;
         save_receipt(&tx, key, -1, &hash, None)?;
         tx.commit()?;
     }
@@ -194,6 +273,7 @@ pub(crate) fn modify(connection: &mut Connection, request: Modify) -> Result<Out
     // only items lacking a receipt, even after a process crash or response loss.
     for (index, op) in request.operations.iter().enumerate() {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        guard.mutation(&tx, &request)?;
         if let Some(key) = key {
             match receipt(&tx, key, index as i64, &hash)? {
                 Err(error) => return Ok(Outcome::failure(error)),
@@ -205,20 +285,33 @@ pub(crate) fn modify(connection: &mut Connection, request: Modify) -> Result<Out
                 Ok(None) => {}
             }
         }
-        let result = match apply(&tx, std::slice::from_ref(op), false)? {
-            Ok(records) => records[0].wire(),
-            Err(error) => error.item(&op.record_name.0, &op.zone),
+        tx.execute_batch("SAVEPOINT record_child")?;
+        let result = if let Some(error) = &input_errors[index] {
+            tx.execute_batch("ROLLBACK TO record_child")?;
+            error.item(&op.record_name.0, &op.zone)
+        } else {
+            match apply(&tx, std::slice::from_ref(op), false)? {
+                Ok(records) => records[0].wire(),
+                Err(error) => {
+                    tx.execute_batch("ROLLBACK TO record_child")?;
+                    error.item(&op.record_name.0, &op.zone)
+                }
+            }
         };
+        tx.execute_batch("RELEASE record_child")?;
         if let Some(key) = key {
             save_receipt(&tx, key, index as i64, &hash, Some(&result))?;
         }
+        guard.mutation(&tx, &request)?;
         tx.commit()?;
         results.push(result);
     }
     let result = json!({"records":results});
     if let Some(key) = key {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        guard.mutation(&tx, &request)?;
         save_receipt(&tx, key, -1, &hash, Some(&result))?;
+        guard.mutation(&tx, &request)?;
         tx.commit()?;
     }
     Ok(Outcome::success(result))
@@ -306,20 +399,6 @@ fn apply(
             )));
         }
     }
-    // Until M4 provides a receipt verifier and Published metadata, no descriptor
-    // supplied by a client may cross this trust boundary or enter history.
-    if changed
-        .iter()
-        .filter(|record| !record.deleted)
-        .any(|record| {
-            record
-                .fields
-                .values()
-                .any(|field| field.kind == "ASSETID" || field.kind == "ASSETID_LIST")
-        })
-    {
-        return Ok(Err(Failure::unsupported()));
-    }
     for id in affected {
         tx.execute(
             "DELETE FROM photo_bindings WHERE namespace_id=1 AND zone_name=?1 AND photo_id=?2",
@@ -328,7 +407,13 @@ fn apply(
     }
     // Assign sequence numbers only in the same transaction as all projections,
     // immutable versions, change rows and the operation receipt.
-    for record in &mut changed {
+    let committed_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| Error::RecoveryFailed)?
+        .as_millis()
+        .try_into()
+        .map_err(|_| Error::RecoveryFailed)?;
+    for (record, operation) in changed.iter_mut().zip(operations) {
         let seq: i64 = tx.query_row(
             "SELECT last_committed_seq FROM namespace_counters WHERE namespace_id=1",
             [],
@@ -336,15 +421,24 @@ fn apply(
         )?;
         record.seq = CommitSeq(seq.checked_add(1).ok_or(Error::RecoveryFailed)?);
         record.revision = Revision(Uuid::new_v4().to_string());
+        if let Err(error) = crate::domain::events::assign(
+            record,
+            before.get(&record.name.0),
+            operation,
+            committed_at_ms,
+        ) {
+            return Ok(Err(error));
+        }
+        let events = serde_json::to_string(&record.events).map_err(|_| Error::RecoveryFailed)?;
         let fields = serde_json::to_string(&record.fields).map_err(|_| Error::RecoveryFailed)?;
         tx.execute(
             "UPDATE namespace_counters SET last_committed_seq=?1 WHERE namespace_id=1",
             [record.seq.0],
         )?;
-        tx.execute("INSERT INTO records VALUES(1,?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(namespace_id,zone_name,record_name) DO UPDATE SET revision=excluded.revision,seq=excluded.seq,fields_json=excluded.fields_json,deleted=excluded.deleted",
-            params![record.zone.zone_name,record.name.0,record.record_type,record.revision.0,record.seq.0,fields,record.deleted])?;
+        tx.execute("INSERT INTO records(namespace_id,zone_name,record_name,record_type,revision,seq,fields_json,deleted,events_json) VALUES(1,?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(namespace_id,zone_name,record_name) DO UPDATE SET revision=excluded.revision,seq=excluded.seq,fields_json=excluded.fields_json,deleted=excluded.deleted,events_json=excluded.events_json",
+            params![record.zone.zone_name,record.name.0,record.record_type,record.revision.0,record.seq.0,fields,record.deleted,events])?;
         tx.execute(
-            "INSERT INTO record_versions VALUES(1,?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO record_versions(namespace_id,zone_name,record_name,seq,record_type,revision,fields_json,deleted,events_json) VALUES(1,?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 record.zone.zone_name,
                 record.name.0,
@@ -352,7 +446,8 @@ fn apply(
                 record.record_type,
                 record.revision.0,
                 fields,
-                record.deleted
+                record.deleted,
+                events
             ],
         )?;
         tx.execute(
