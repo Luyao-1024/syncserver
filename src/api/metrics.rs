@@ -1,6 +1,6 @@
 //! Process-local operational snapshots. Reading these never enqueues database work.
 use super::AppState;
-use axum::{Json, extract::State};
+use axum::Json;
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::Ordering};
 use tokio::sync::Semaphore;
@@ -35,7 +35,9 @@ pub(super) fn snapshot(state: &AppState) -> Value {
     })
 }
 
-pub(super) async fn read(State(state): State<Arc<AppState>>) -> Json<Value> {
+pub(super) async fn read(
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
+) -> Json<Value> {
     Json(json!({
         "version": 1,
         "runId": state.store.metadata().recovery.run_id,

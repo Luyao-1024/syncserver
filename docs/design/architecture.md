@@ -6,7 +6,7 @@
 
 一个 Rust crate，Tokio + Axum 负责 HTTP；SQLite WAL 保存记录、历史版本和恢复证据；文件目录保存不可变资源。首版不引入分布式数据库，不用文件名/mtime 充当内容身份。
 
-选择 SQLite 的依据是首版单进程和单账户规模，而不是认定它天然比 FoundationDB 快。保留存储边界，出现经实测的吞吐、可用性或多实例需求时再评估后端。
+SQLite 保留单进程架构；多用户扩展按账户建立独立数据库和单写入所有者，认证目录单独保存。具体入口见[多用户实现](multi-user.md)。这不是认定 SQLite 天然比 FoundationDB 快。保留存储边界，出现经实测的吞吐、可用性或多实例需求时再评估后端。
 
 ```mermaid
 flowchart LR
@@ -87,3 +87,8 @@ PhotoViewer 保留自己的三方规划、上传范围、删除抑制和本地 s
 api 统一租约请求头/错误/原生控制路径，domain 定义过期/fence/进度/阶段，store 在唯一写入线程内事务校验持有者与最终写入；jobs 管理失效取消与控制请求公平性，assets 绑定长流和发布意图代次。只读路径仍独立开放，不获取设备上行锁。
 
 客户端 dirty 是本地既有 DB 字段，任务视图从该字段派生；仅有效成功确认回调更新对应版本。配对发布台账和下载待办不是另一份 dirty 状态。具体机制见[协调契约](../contracts/upload-coordination.md)，实施顺序见[开发任务](next-development-tasks.md)。
+
+
+## 用户上下文
+
+登录解析在 API 领域适配前完成。`users.rs` 管理认证库，`auth.rs` 将已验证会话解析为私有用户 AppState，`user_cli.rs` 负责管理员终端输入和用户命令。每个用户的普通/控制队列、文件发布互斥和资源并发相互独立；首次打开/恢复只对该用户串行化。旧数据接管复用原 Store 和发布互斥，避免升级期间两个文件发布所有者。权威行为见[认证契约](../contracts/authentication.md)。

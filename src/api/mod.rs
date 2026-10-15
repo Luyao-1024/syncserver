@@ -1,4 +1,5 @@
 mod assets;
+mod auth;
 mod error;
 mod json;
 mod leases;
@@ -10,7 +11,7 @@ use crate::{Config, credentials::Credentials, store::Store};
 use axum::{
     Json, Router,
     body::to_bytes,
-    extract::{Path, Request, State},
+    extract::{Extension, Path, Request, State},
     http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -29,6 +30,8 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 pub(crate) struct AppState {
+    pub authority: Option<Arc<crate::auth::Authority>>,
+    pub user: Option<crate::users::User>,
     pub config: Config,
     pub credentials: Credentials,
     pub store: Store,
@@ -52,6 +55,8 @@ impl AppState {
     pub fn new(config: Config, credentials: Credentials, store: Store) -> Self {
         let capacity = config.limits.db_queue_capacity;
         Self {
+            authority: None,
+            user: None,
             original_uploads: Arc::new(Semaphore::new(
                 (config.limits.upload_concurrency - config.limits.upload_concurrency / 2).max(1),
             )),
@@ -84,6 +89,7 @@ impl AppState {
 
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     let private = Router::new()
+        .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/metrics", get(metrics::read))
         .route("/v1/snapshots", post(snapshot))
@@ -105,6 +111,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
+        .route("/v1/auth/login", post(auth::login))
         .merge(private)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, response_metadata))
@@ -136,23 +143,66 @@ async fn authenticate(
     request: Request,
     next: Next,
 ) -> Response {
+    let mut request = request;
     let mut headers = request.headers().get_all(header::AUTHORIZATION).iter();
-    let key = headers
+    let token = headers
         .next()
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let valid_bearer = key.is_some_and(|key| state.credentials.authenticate(key));
-    let valid_capability = !request.headers().contains_key(header::AUTHORIZATION)
-        && request.uri().path().ends_with("/content")
-        && assets::capability(&state, &request).is_ok();
-    if headers.next().is_some() || (!valid_bearer && !valid_capability) {
-        return ApiError::new(
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_owned);
+    let duplicate = headers.next().is_some();
+    let denied = || {
+        let mut response = ApiError::new(
             StatusCode::UNAUTHORIZED,
             "AUTHENTICATION_REQUIRED",
-            "A valid Bearer API key is required",
+            "A valid login session is required",
         )
         .into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        response
+    };
+    if duplicate {
+        return denied();
     }
+    if !state.ready.load(Ordering::Acquire) {
+        return ApiError::from(crate::Error::Unavailable).into_response();
+    }
+    let Some(authority) = &state.authority else {
+        return denied();
+    };
+    let selected = if let Some(token) = token.as_deref() {
+        match authority.resolve(token).await {
+            Ok(Some(context)) => Some(context),
+            Ok(None) => match authority.legacy_allowed().await {
+                Ok(true) if state.credentials.authenticate(token) => Some(state.clone()),
+                Ok(_) => None,
+                Err(e) => return ApiError::from(e).into_response(),
+            },
+            Err(e) => return ApiError::from(e).into_response(),
+        }
+    } else if !request.headers().contains_key(header::AUTHORIZATION) {
+        match authority.legacy_allowed().await {
+            Ok(true)
+                if request.uri().path().ends_with("/content")
+                    && assets::capability(&state, &request).is_ok() =>
+            {
+                Some(state.clone())
+            }
+            Ok(_) => None,
+            Err(e) => return ApiError::from(e).into_response(),
+        }
+    } else {
+        None
+    };
+    let Some(state) = selected else {
+        return denied();
+    };
+    if state.user.is_some() {
+        state.requests.fetch_add(1, Ordering::Relaxed);
+    }
+    request.extensions_mut().insert(state.clone());
     let monitoring = request.uri().path() == "/v1/metrics";
     if !monitoring && (!state.ready.load(Ordering::Acquire) || !state.store.accepting()) {
         return ApiError::new(
@@ -186,6 +236,15 @@ async fn health() -> Json<Value> {
 }
 
 async fn ready(State(state): State<Arc<AppState>>) -> Response {
+    if state.ready.load(Ordering::Acquire)
+        && let Some(authority) = &state.authority
+    {
+        match authority.legacy_allowed().await {
+            Ok(false) => return Json(json!({"status":"ready"})).into_response(),
+            Ok(true) => {}
+            Err(error) => return ApiError::from(error).into_response(),
+        }
+    }
     if !state.ready.load(Ordering::Acquire) || !state.store.accepting() {
         return ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -206,10 +265,11 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
-async fn capabilities(State(state): State<Arc<AppState>>) -> Json<Value> {
+async fn capabilities(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M4",
         "namespace": state.config.namespace, "zones": state.config.zones,
+        "authentication":{"mode":if state.user.is_some(){"username_password"}else{"api_key"},"user":state.user,"resourceBearerRequired":state.user.is_some(),"sessionTTLSeconds":crate::users::SESSION_TTL_SECONDS},
         "publicBaseURL": state.config.public_base_url.as_str(),
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,
@@ -231,7 +291,7 @@ async fn capabilities(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn cloudkit(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     Path((container, environment, database, operation)): Path<(String, String, String, String)>,
     request: Request,
 ) -> Response {
@@ -431,7 +491,7 @@ async fn unknown() -> Response {
     .into_response()
 }
 
-async fn snapshot(State(state): State<Arc<AppState>>, request: Request) -> Response {
+async fn snapshot(Extension(state): Extension<Arc<AppState>>, request: Request) -> Response {
     if request.uri().query().is_some() {
         return ApiError::bad_request().into_response();
     }

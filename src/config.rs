@@ -91,7 +91,7 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
                 .ok_or(Error::Config(
-                    "data directory and both credential file paths are required",
+                    "data directory and signing key file path are required",
                 ))
         };
         let bind: SocketAddr = value("SYNC_BIND", "127.0.0.1:8790")
@@ -187,7 +187,10 @@ impl Config {
             bind,
             data_dir: required("SYNC_DATA_DIR")?,
             public_base_url,
-            api_key_file: required("SYNC_API_KEY_FILE")?,
+            api_key_file: values
+                .get("SYNC_API_KEY_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
             signing_key_file: required("SYNC_SIGNING_KEY_FILE")?,
             namespace: Namespace::configured(container),
             zones: zones.into_iter().collect(),

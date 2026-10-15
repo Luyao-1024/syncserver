@@ -9,7 +9,7 @@ use crate::{
 use axum::{
     Json,
     body::{Body, Bytes},
-    extract::{Path, Request, State},
+    extract::{Path, Request},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -108,7 +108,7 @@ pub(super) async fn reserve(
     }
 }
 pub(super) async fn session(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
@@ -122,7 +122,7 @@ pub(super) async fn session(
     json_reply(&state, AssetCommand::Status(id)).await
 }
 pub(super) async fn renew(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
@@ -146,7 +146,7 @@ pub(super) async fn renew(
     }
 }
 pub(super) async fn describe(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
@@ -190,7 +190,7 @@ impl Drop for UploadCleanup {
     }
 }
 pub(super) async fn upload(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
@@ -412,7 +412,7 @@ fn range(value: &str, size: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 pub(super) async fn download(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
@@ -432,6 +432,15 @@ async fn download_inner(
 ) -> Result<Response, ApiError> {
     let params = parameters(&request)?;
     let role = role(&params)?;
+    if state.user.is_some() {
+        capability(&state, &request).map_err(|_| {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "AUTHENTICATION_REQUIRED",
+                "A valid resource capability for this account is required",
+            )
+        })?;
+    }
     let asset = match state
         .store
         .asset(AssetCommand::Metadata(id, role.clone()))

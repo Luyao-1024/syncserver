@@ -1,6 +1,7 @@
 //! Incremental photo metadata, fenced upload leases and immutable paired resources.
 mod api;
 mod assets;
+mod auth;
 mod config;
 mod credentials;
 pub mod domain;
@@ -8,6 +9,8 @@ mod error;
 pub mod jobs;
 pub mod store;
 mod tokens;
+pub mod user_cli;
+pub mod users;
 
 pub use config::{Config, Limits};
 pub use error::{Error, Result};
@@ -38,9 +41,21 @@ impl Server {
             credentials.tokens.clone(),
         )
         .await?;
-        Ok(Self {
-            state: Arc::new(api::AppState::new(config, credentials, store)),
-        })
+        let root = config.data_dir.clone();
+        let users = tokio::task::spawn_blocking(move || users::Users::open(&root))
+            .await
+            .map_err(|_| Error::WorkerFailed)??;
+        let authority = Arc::new(auth::Authority::new(
+            config.clone(),
+            credentials.clone(),
+            store.clone(),
+            users,
+        ));
+        let mut state = api::AppState::new(config, credentials, store);
+        state.authority = Some(authority.clone());
+        let state = Arc::new(state);
+        authority.bind_legacy_runtime(&state);
+        Ok(Self { state })
     }
 
     pub fn router(&self) -> axum::Router {
@@ -55,6 +70,9 @@ impl Server {
 
     pub async fn shutdown(self) -> Result<()> {
         self.state.ready.store(false, Ordering::Release);
+        if let Some(authority) = &self.state.authority {
+            authority.shutdown().await?;
+        }
         self.state.store.shutdown().await
     }
 
@@ -72,6 +90,9 @@ impl Server {
             })
             .await;
         self.state.ready.store(false, Ordering::Release);
+        if let Some(authority) = &self.state.authority {
+            authority.shutdown().await?;
+        }
         let database = self.state.store.shutdown().await;
         result?;
         database

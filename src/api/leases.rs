@@ -5,7 +5,7 @@ use crate::domain::{
 };
 use axum::{
     Json,
-    extract::{Path, Request, State},
+    extract::{Path, Request},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -51,7 +51,10 @@ pub(super) async fn result(state: &AppState, request: Control) -> Response {
         Err(error) => ApiError::from(error).into_response(),
     }
 }
-pub(super) async fn acquire(State(state): State<Arc<AppState>>, request: Request) -> Response {
+pub(super) async fn acquire(
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
+    request: Request,
+) -> Response {
     if request.uri().query().is_some() {
         return ApiError::bad_request().into_response();
     }
@@ -65,7 +68,7 @@ pub(super) async fn acquire(State(state): State<Arc<AppState>>, request: Request
     }
 }
 pub(super) async fn control(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path((id, operation)): Path<(String, String)>,
     request: Request,
 ) -> Response {
@@ -106,7 +109,7 @@ pub(super) async fn control(
     }
 }
 pub(super) async fn status(
-    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {

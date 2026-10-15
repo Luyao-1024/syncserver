@@ -16,6 +16,13 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let config = Config::from_env()?;
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "users") {
+        return syncserver::user_cli::run(config, &args[1..]);
+    }
+    if !args.is_empty() {
+        return Err(syncserver::Error::Config("usage: syncserver [users ...]"));
+    }
     let address = config.bind_address();
     let server = Server::open(config).await?;
     let listener = match TcpListener::bind(address).await {

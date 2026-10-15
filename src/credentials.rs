@@ -6,16 +6,23 @@ use std::{fs::File, io::Read, os::unix::fs::MetadataExt, path::Path};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+#[derive(Clone)]
 pub(crate) struct Credentials {
-    api_digest: [u8; 32],
+    api_digest: Option<[u8; 32]>,
     pub signing_fingerprint: [u8; 32],
     pub tokens: std::sync::Arc<crate::tokens::TokenCodec>,
 }
 
 impl Credentials {
     pub fn load(api_path: &Path, signing_path: &Path) -> Result<Self> {
-        let api = read_line(api_path)?;
-        if !(32..=512).contains(&api.len()) || !api.bytes().all(|b| (33..=126).contains(&b)) {
+        let api = if api_path.as_os_str().is_empty() {
+            Zeroizing::new(String::new())
+        } else {
+            read_line(api_path)?
+        };
+        if !api_path.as_os_str().is_empty()
+            && (!(32..=512).contains(&api.len()) || !api.bytes().all(|b| (33..=126).contains(&b)))
+        {
             return Err(Error::Config(
                 "API key must be a single line of 32-512 printable non-whitespace ASCII characters",
             ));
@@ -41,17 +48,31 @@ impl Credentials {
                     .try_into()
                     .map_err(|_| Error::Config("invalid signing key"))?,
             )),
-            api_digest: Sha256::digest(api.as_bytes()).into(),
+            api_digest: if api.is_empty() {
+                None
+            } else {
+                Some(Sha256::digest(api.as_bytes()).into())
+            },
             signing_fingerprint: mac.finalize().into_bytes().into(),
         })
     }
 
+    pub fn scoped(&self, user: &str) -> Result<Self> {
+        let (codec, fingerprint) = self.tokens.scoped(user)?;
+        Ok(Self {
+            api_digest: None,
+            signing_fingerprint: fingerprint,
+            tokens: std::sync::Arc::new(codec),
+        })
+    }
     pub fn authenticate(&self, key: &str) -> bool {
         if !(32..=512).contains(&key.len()) {
             return false;
         }
         let digest: [u8; 32] = Sha256::digest(key.as_bytes()).into();
-        bool::from(self.api_digest.ct_eq(&digest))
+        self.api_digest
+            .as_ref()
+            .is_some_and(|expected| bool::from(expected.ct_eq(&digest)))
     }
 }
 

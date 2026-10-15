@@ -7,11 +7,11 @@
 | 方法与路径 | 认证 | 行为 |
 |---|---|---|
 | POST `{CloudKit-base}/assets/upload` | Bearer | 创建会话，返回 tokens[].url 与会话扩展 |
-| POST `/v1/uploads/{sessionId}/content` | 上传能力 URL | 原始字节，流式校验和发布 |
+| POST `/v1/uploads/{sessionId}/content` | 账户会话 + 上传能力 URL（旧无账户模式仅能力） | 原始字节，流式校验和发布 |
 | GET `/v1/uploads/{sessionId}` | Bearer | 查询持久会话状态 |
 | POST `/v1/uploads/{sessionId}/renew` | Bearer | Reserved 会话重新取得上传 URL |
 | GET `/v1/assets/{assetId}?role=original|thumbnail` | Bearer | 新的资源描述、下载 URL 和 receipt |
-| GET/HEAD `/v1/assets/{assetId}/content?role=...` | 下载能力 URL 或 Bearer | 指定角色内容/元数据，不重算 hash |
+| GET/HEAD `/v1/assets/{assetId}/content?role=...` | 账户会话 + 下载能力 URL（旧无账户模式为能力或 API key） | 指定角色内容/元数据，不重算 hash |
 
 本服务上传 URL 使用 application/octet-stream 原始字节，不实现 Apple 私有 multipart 加密上传；兼容 `/assets/upload` 的通用申请形状。不能宣称未适配 Apple SDK 可完成上传。
 
@@ -81,3 +81,8 @@ v0.1 默认原图上限 512 MiB、缩略图上限 2 MiB；原图上限可配置�
 所有变更路径附带[上行租约](upload-coordination.md)凭证，上传能力/会话绑定 leaseId/fence。`tokens[]._syncserver` 增加 intent=create/update（对应新增/修改阶段）；预留/续期/正文及 Published 成功确认都在当前代次和阶段内，不能用仍有效的上传 URL 跨越租约失效。fixture 使用合成数据；真实上传/成对发布/失锁/保活另有运行测试。
 
 会话/资源/receipt 状态 GET 和下载继续无须上行租约。上传完成不直接清本地 dirty，照片记录对的变更结果确认并经有效本地回调后才更新字段。阶段顺序固定删除→修改→新增；入库对象和服务器摘要规则不变。
+
+
+## 账户隔离补充
+
+账户模式必须在原有能力、角色、路径和租约校验之外携带当前用户的会话 Bearer，见[认证契约](authentication.md)。即使已经有会话，携带错误/篡改/过期或其他账户的下载能力也必须拒绝，不能只校验一项凭证。Root 元数据、原图/缩略图文件、会话和去重均处于选择出的用户 Store 中，不跨账户重用资产。

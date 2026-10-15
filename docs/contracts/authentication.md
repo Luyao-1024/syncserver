@@ -1,0 +1,51 @@
+# 用户认证与存储隔离
+
+状态：本次开发契约，验收结果在实施记录中另列。此文由服务端拥有，客户端只链接并适配。
+
+## 身份与隔离
+
+管理员通过服务端 `syncserver users create USERNAME` 创建用户；没有开放注册或用户枚举接口。用户名为 1–64 个 ASCII 字母、数字、点、下划线或短横线，以字母或数字开头，大小写不区分。密码为 12–1024 个 UTF-8 字节，至少 12 个字符，禁止换行与控制字符。密码以独立随机盐的 Argon2id PHC 字符串保存，禁止明文和快速摘要存储。
+
+每个普通用户得到不可变 UUID。元数据 SQLite、不可变资源、暂存目录、数据库 generation、条件 revision、幂等回执、上传锁/fence 和正文签名密钥都隔离在该身份的存储上下文中。用户名与请求字段不能选择数据目录或其他身份。相同 recordName、operationId、内容 digest、deviceId 可以在不同用户中独立使用；同用户设备继续共享同步数据和一个命名空间上行租约。
+
+普通用户目录为 `SYNC_DATA_DIR/users/<uuid>`，数据库与目录权限复用原有私有文件约束。只有管理员可见的认证目录保存用户和会话摘要，不通过同步接口提供。每个用户的签名密钥由部署根签名密钥以域分离 HMAC 派生；签名 token 不可跨账户使用。用户之间不做物理资源去重。
+
+旧单账户数据保留在原数据目录；仅允许一个创建用户使用 `--adopt-legacy` 显式接管原存储及其既有签名上下文。其他用户不能读取它。没有用户且部署配置了旧 API key 时保留旧 API 接入；创建首个用户后停止接受旧 API key 与无会话资源能力访问。密码登录不要求再配置 API key。
+
+## 登录与会话
+
+`POST /v1/auth/login`，严格 JSON，正文上限 4096 字节：
+
+```json
+{"username":"alice","password":"synthetic-example-password"}
+```
+
+成功 HTTP 200：
+
+```json
+{"accessToken":"example-session-token-never-use","tokenType":"Bearer","expiresAt":1800000000,"user":{"id":"11111111-1111-4111-8111-111111111111","username":"alice"}}
+```
+
+会话是至少 256 位随机秘密，服务端只持久化 SHA-256 摘要和绝对过期时间，默认有效 30 天。会话不绑定设备；同用户多个会话访问相同同步命名空间。未知用户名、错误密码和禁用账户统一返回 HTTP 401 `AUTHENTICATION_FAILED`。密码验证在有界阻塞任务中进行，登录有独立并发和尝试限制，不占上传控制配额。登录响应、凭证和鉴权失败响应不允许缓存，日志不包含正文、密码、Authorization 或资源能力。
+
+`POST /v1/auth/logout` 使用当前会话 Bearer，撤销当前会话，返回 HTTP 204。管理员重设密码或禁用用户撤销其所有会话。每次请求验证会话过期/禁用状态，不把旧的本地身份缓存当成授权。
+
+除健康/就绪和登录外，账户模式下所有 API 均要求 `Authorization: Bearer <accessToken>`。原图/缩略图上传下载仍校验签名能力、角色、路径、租约等原有约束，**还必须携带同一账户会话**；签名 URL 单独不足以访问账户资源。跨账户 Bearer+能力、游标、资源或租约组合必须拒绝。
+
+已认证的 `/v1/capabilities` 附加 `authentication`，提供用户身份、会话方式及 `resourceBearerRequired=true`。普通 capability 与记录/资源契约的字段语义保持原样。
+
+客户端登录密码只用于当次认证；持久保存会话至平台凭证服务，不保存明文密码。连接必须记录用户身份；同地址不同用户可以建立独立连接，切换用户不能继承原用户 token、已发出操作或本地同步关系。重新登录已有连接时必须核对返回身份与原连接一致。
+
+## 管理命令
+
+- `syncserver users create USERNAME [--password-stdin] [--adopt-legacy]`
+- `syncserver users list`
+- `syncserver users password USERNAME [--password-stdin]`
+- `syncserver users disable USERNAME`
+- `syncserver users enable USERNAME`
+
+默认终端输入关闭回显并确认；脚本用 stdin，不能在 argv 传密码。命令复用部署的数据目录、签名配置和私有文件权限，以服务运行用户执行，可在服务运行时创建或维护用户。重名和重复接管原存储失败，不覆盖现有用户。账户管理不会删除照片。
+
+## 本次必须验证
+
+不同用户同 ID 创建、查询/增量/快照互不可见；租约可独立持有；签名游标/资产能力/回执/上传会话不可跨用户；相同内容不跨用户复用；注销/密码重设/禁用与普通重启后的会话行为；命令行创建与并发登录；旧存储显式接管与既有单账户夹具；客户端用户名密码登录、身份核对及会话凭证持久化。

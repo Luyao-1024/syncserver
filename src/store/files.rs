@@ -34,7 +34,7 @@ pub(crate) fn open_private(path: &Path, create: bool) -> Result<File> {
     Ok(file)
 }
 
-fn directory(path: &Path) -> Result<()> {
+pub(crate) fn directory(path: &Path) -> Result<()> {
     match DirBuilder::new().recursive(true).mode(0o700).create(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

@@ -18,7 +18,7 @@
 | `/records/query` | POST | recordType、desiredKeys、一致分页 | 只支持明确列出的排序/过滤；Hyperion 索引不支持 |
 | `/records/lookup` | POST | 按 recordName/zoneID 批量读取 | 显式返回不存在的项目 |
 | `/records/modify` | POST | create、条件 update、条件 delete | 强制覆盖类型不支持；atomic 只支持单 zone |
-| `/changes/database` | POST | 哪些 zone 有变化、database token | 不代表分享权限或多账户 |
+| `/changes/database` | POST | 哪些 zone 有变化、database token | 仅当前认证账户，不代表分享授权 |
 | `/changes/zone` | POST | zones 数组、记录变化、墓碑、moreComing | 每 zone 独立 token |
 | `/zones/changes` | POST | `/changes/zone` 的同语义别名 | 与 records/changes 共享处理及监控计数 |
 | `/records/changes` | POST | `/changes/zone` 的旧接口别名 | 仅相同已核验请求形状，不兼容未知历史变体 |
@@ -187,3 +187,8 @@ snapshots/incrementalChanges/assetUpload/assetDownload/photoPublication=false。
 [协调契约](../contracts/upload-coordination.md)定义 upload-leases 获取/续租/进度/阶段/释放和只读 operation 状态。它们属于本服务原生扩展，不声称是 Apple 私有协议。M3 实现 token/租约/门槛后统一守卫 records/modify 及所有后续变更入口；M4 会话与上传能力绑定同一 fence。下行 query/lookup/changes/资源读取不持上行锁。
 
 当前声明 uploadLeases/fencing/tokenCurrentGate/uploadPhases/operationStatusRead 等能力与实际 TTL/保活参数；M2 历史版本没有这些支持。新阶段只接受同类 operationType 批次，不能把原 M2 混合批次支持保留成跨阶段旁路。
+
+
+## 用户名密码扩展
+
+`POST /v1/auth/login` 和 `POST /v1/auth/logout`、用户身份能力和账户模式资源双重认证见[认证契约](../contracts/authentication.md)。其余记录/资源/快照/租约语义在已选用户上下文内复用；不同用户不能交叉使用 token、签名、资源、操作回执或租约。没有用户的旧模式仍可使用原 API key；创建用户后需要新客户端登录会话，旧 key 不绕过账户验证。此扩展不提供共享数据库、组织 ACL 或 Apple 登录。

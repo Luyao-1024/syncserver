@@ -31,4 +31,9 @@
 
 ## 新上行协调开发入口
 
-先读[上行协调契约](docs/contracts/upload-coordination.md)与[下一步任务](docs/design/next-development-tasks.md)。服务端已实现 M3/M4，当前行为/证据见 docs/design/v0.1-server.md，客户端 C1 尚未接入。新变更入口必须统一租约/fence/最新进度/阶段，旧 alias 不能绕过；阶段为删除→修改→新增。dirty 为本地既有 DB 字段，禁止独立 dirty 文件/台账/持久队列，失败/跳过/失锁不清，成功回调需检查本地版本/轮次。
+先读[上行协调契约](docs/contracts/upload-coordination.md)与[下一步任务](docs/design/next-development-tasks.md)。服务端已实现 M3/M4，当前行为/证据见 docs/design/v0.1-server.md，客户端 C1 的本地实现与证据见其自身仓库记录。新变更入口必须统一租约/fence/最新进度/阶段，旧 alias 不能绕过；阶段为删除→修改→新增。dirty 为本地既有 DB 字段，禁止独立 dirty 文件/台账/持久队列，失败/跳过/失锁不清，成功回调需检查本地版本/轮次。
+
+
+## 多用户入口
+
+先读[认证契约](docs/contracts/authentication.md)与[多用户实现](docs/design/multi-user.md)。会话先解析为服务端拥有的账户上下文，再访问记录/资源/租约；不能从请求参数任意选择 namespace。账户密码仅 Argon2id，随机会话仅存摘要，资源须同时验证用户会话及原有能力。用户管理 CLI 不删除照片；旧数据只由唯一显式接管用户拥有。客户端协议仍只引用服务端契约。

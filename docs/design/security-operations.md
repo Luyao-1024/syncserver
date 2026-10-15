@@ -2,11 +2,11 @@
 
 状态：认证/权限/scope、签名读 token、租约与资源能力已实现，部署配置已建立；实际公网部署另行验收。
 
-## 首版身份
+## 当前身份与隔离
 
-一个账户，Bearer API key 对应配置的 namespace。API key 和签名密钥从权限受限的文件读取；不内置默认凭证，不放入 Git，也不输出明文到日志。
+用户名密码、会话撤销、资源双重认证和逐账户存储的当前约束由[认证契约](../contracts/authentication.md)定义。每个账户自己的 SQLite、对象、暂存、签名上下文和租约相互独立；密码以随机盐 Argon2id 保存，会话只存 SHA-256 摘要。认证入口限流并在有界阻塞任务中校验密码。密码和会话不写入日志，文件权限仍由服务 UID 的私有目录保证。实现、CLI 和旧数据接管见[多用户说明](multi-user.md)。
 
-保留 tenant/container/environment/database 的隔离边界，但不宣称多用户权限系统已完成。`shared/public` 请求明确拒绝。
+历史单账户模式只在没有用户且配置 API key 时保留。创建首个用户后不再接受该 API key。`shared/public`、开放注册、组织 ACL 和跨账户共享仍不支持。
 
 ## token 和 URL
 
@@ -23,7 +23,7 @@
 | SYNC_BIND | 默认 127.0.0.1:8790，明确配置后才对外暴露 |
 | SYNC_DATA_DIR | 必填；数据库、对象、暂存所在根目录，单进程目录锁 |
 | SYNC_PUBLIC_BASE_URL | 默认 http://127.0.0.1:8790；HTTP 只允许 literal loopback IP（不接受 DNS 主机名），其他必须 HTTPS；基址不能有用户信息、query/fragment 或路径前缀 |
-| SYNC_API_KEY_FILE | 请求认证密钥文件 |
+| SYNC_API_KEY_FILE | 可选；仅无用户旧单账户模式使用的请求认证密钥文件 |
 | SYNC_SIGNING_KEY_FILE | 跨重启稳定的签名密钥文件 |
 | SYNC_CONTAINER | 默认 com.apple.photos.cloud；已有数据目录不得静默更改 |
 | SYNC_ZONES | 部署初始化的 zone 清单，默认 PrimarySync |
@@ -93,3 +93,8 @@ leaseToken 是秘密，与 Bearer/资源凭证不同域；deviceId 不足以授�
 受 Bearer 认证的 `GET /v1/metrics` 提供进程计数、两个数据库队列、HTTP/传输占用与启动恢复结果，详见[运维指标](../contracts/metrics.md)。它有独立单请求配额，既不占租约控制配额，也不提交数据库工作；普通/控制 HTTP 配额耗尽或执行器关闭时仍可诊断。启动恢复失败通过退出状态/日志报告，不能从当前进程的恢复报告宣称所有历史故障均可计数。监控字段没有资源 URL、路径、记录或凭证。
 
 部署模板和只读 smoke 已建立，smoke 同时验证指标接口。上述 M1/M2/待实现小节保留阶段历史；当前租约/传输已生效的配置与边界以[基本实现](v0.1-server.md)和[上行协调契约](../contracts/upload-coordination.md)为准。
+
+
+## 多用户运维补充
+
+同用户的设备共享该用户上行租约；不同用户不竞争同一租约或写入队列。认证目录包含用户 UUID/密码散列/会话摘要，备份须与各用户存储及签名配置共同保留。恢复旧认证备份后应撤销恢复出来的旧会话。管理员账户命令不删除照片，不能把禁用账户当作数据删除。当前实施与验证见[多用户说明](multi-user.md)。

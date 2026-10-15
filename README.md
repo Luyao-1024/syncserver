@@ -2,7 +2,7 @@
 
 独立的 Rust 照片同步服务端，参考 CloudKit 的记录、资源、区域和变化游标模型，为 PhotoViewer 提供增量同步。
 
-**当前阶段：基本服务端已实现到 M4，M5 的 CI 与部署工具已建立。** 支持签名 token、共享固定水位快照、增量变化、单设备上行租约/保活/fencing、原图与缩略图上传、SHA-256 校验/去重、原子照片配对、条件与 Range 下载、幂等状态和故障恢复。参考 [基本实现与验收](docs/design/v0.1-server.md)。PhotoViewer 客户端/C1 仍待接入，Apple 登录、私有加密/索引及未适配 Photos 不属于兼容范围。
+**当前阶段：基本服务端已实现到 M4，M5 的 CI 与部署工具已建立。** 支持签名 token、共享固定水位快照、增量变化、单设备上行租约/保活/fencing、原图与缩略图上传、SHA-256 校验/去重、原子照片配对、条件与 Range 下载、幂等状态和故障恢复。参考 [基本实现与验收](docs/design/v0.1-server.md)。PhotoViewer 原生客户端已在相邻仓库实现并验证。当前扩展支持用户名密码和逐账户隔离，见[多用户实现与管理](docs/design/multi-user.md)；本轮本地结果不代表已部署线上多用户。Apple 登录、私有加密/索引及未适配 Photos 不属于兼容范围。
 
 首次正式发布前不要求兼容旧开发版数据库；持久化/恢复和普通重启的 token 连续性继续验证。服务端接口已实现不代表公网部署已完成。
 
@@ -10,6 +10,7 @@
 
 | 接口 | 用途 |
 |---|---|
+| POST /v1/auth/login、/v1/auth/logout | 用户名密码登录、当前会话撤销 |
 | GET /healthz、/readyz、/v1/capabilities | 存活、就绪、实际能力/配置/计数 |
 | CloudKit zones/list | 固定 zone 集合 |
 | records/modify、records/lookup、records/query | 有锁条件写入、当前/快照读取和 keyset 查询 |
@@ -21,13 +22,13 @@
 | CloudKit assets/upload、/v1/uploads/{id} | 预留、状态、续期和流式上传 |
 | /v1/assets/{id} 及 content | 资源描述、GET/HEAD、条件和单段 Range |
 
-CloudKit 基址为 `/database/1/{container}/production/private`。业务入口使用 Bearer；上传 content 使用签名能力和 lease 三请求头，下载 content 使用 Bearer 或签名 URL。资源角色严格 original/thumbnail，不将原图作为缺失缩略图的替代。
+CloudKit 基址为 `/database/1/{container}/production/private`。账户模式业务入口使用登录会话 Bearer；上传 content 同时要求会话、签名能力和 lease 三请求头，下载 content 同时要求会话和下载能力。没有用户的旧单账户部署保留原 API key/资源能力接入。资源角色严格 original/thumbnail，不将原图作为缺失缩略图的替代。
 
 ## 本地运行
 
 本机验证工具链为 Rust 1.98.0，edition 2024，Cargo 声明最低版本 1.88（最低版本由独立 CI job 构建/测试，具体结果以对应提交为准）。Cargo.lock 已提交；SQLite 通过 bundled 构建。当前使用 Unix 权限和信号接口，在 Linux 上验证；无需 GTK 或相邻 PhotoViewer 工程。
 
-以下创建独立的本地试运行目录和随机凭证，不输出密钥。初始化命令使用排他创建，重复执行不会覆盖已有密钥。
+以下创建独立的本地试运行目录和随机签名密钥，不输出密钥。初始化命令使用排他创建，重复执行不会覆盖已有密钥。
 
 ```bash
 umask 077
@@ -37,15 +38,15 @@ python - "$SYNC_LOCAL_DIR" <<'PY'
 import base64, os, pathlib, secrets, sys
 root = pathlib.Path(sys.argv[1])
 for name, text in [
-    ('api.key', secrets.token_urlsafe(32)),
     ('signing.key', base64.b64encode(secrets.token_bytes(32)).decode()),
 ]:
     with os.fdopen(os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
         stream.write(text + '\n')
 PY
 export SYNC_DATA_DIR="$SYNC_LOCAL_DIR/data"
-export SYNC_API_KEY_FILE="$SYNC_LOCAL_DIR/api.key"
+unset SYNC_API_KEY_FILE
 export SYNC_SIGNING_KEY_FILE="$SYNC_LOCAL_DIR/signing.key"
+cargo run --locked -- users create alice
 cargo run --locked
 ```
 
@@ -56,24 +57,30 @@ curl --fail http://127.0.0.1:8790/healthz
 curl --fail http://127.0.0.1:8790/readyz
 ```
 
-认证检查可通过 Python 读取本地凭证，避免把密钥展开到进程命令行：
+在 PhotoViewer 设置中输入本地地址、用户名和密码登录。也可通过以下脚本交互检查，只输出能力，不打印密码或会话：
 
 ```bash
-python - <<'PY'
-import json, pathlib, urllib.request
-key = pathlib.Path('local-run/api.key').read_text().strip()
+python - <<'PYAUTH'
+import getpass, json, urllib.request
+body = json.dumps({'username': input('Username: '), 'password': getpass.getpass()}).encode()
+request = urllib.request.Request('http://127.0.0.1:8790/v1/auth/login', data=body,
+    headers={'Content-Type': 'application/json'})
+with urllib.request.urlopen(request) as response:
+    session = json.load(response)
 request = urllib.request.Request('http://127.0.0.1:8790/v1/capabilities',
-    headers={'Authorization': 'Bearer ' + key})
+    headers={'Authorization': 'Bearer ' + session['accessToken']})
 with urllib.request.urlopen(request) as response:
     print(json.dumps(json.load(response), indent=2, ensure_ascii=False))
-PY
+PYAUTH
 ```
+
+管理命令还包括 `users list`、`users password alice`、`users disable alice`、`users enable alice`。密码默认终端隐藏输入并确认；自动化用 `--password-stdin`，不要把密码放到命令行参数。**原有单账户数据的所有者需显式使用 `users create owner --adopt-legacy` 接管**；创建首个用户后旧 API key 停止授权，其他用户不会继承旧照片。详见[认证契约](docs/contracts/authentication.md)与[升级步骤](docs/design/multi-user.md)。
 
 Ctrl+C 或 SIGTERM 停止接收新操作，排空数据库队列，登记正常停止并释放目录锁。再次使用同一目录和签名密钥启动会保留 databaseGeneration。另一个进程同时使用该目录会得到 DATA_DIR_LOCKED。
 
 ## 配置与安全
 
-数据目录及 objects/staging 必须由服务用户拥有、权限 0700；管理文件与密钥文件为 0600。拒绝符号链接和文件硬链接，不自动放宽文件权限。密钥不得进入 Git。
+认证库位于 `.authentication/users.sqlite`；普通用户各自使用 `users/<uuid>/metadata.sqlite`、`objects` 和 `staging`，不会跨用户去重。登录会话有效 30 天，服务端仅存摘要；客户端不保存登录密码。数据目录及 objects/staging 必须由服务用户拥有、权限 0700；管理文件与密钥文件为 0600。拒绝符号链接和文件硬链接，不自动放宽文件权限。密钥不得进入 Git。
 
 默认 container 是 com.apple.photos.cloud，zone 是 PrimarySync。可用 SYNC_ZONES 配置逗号分隔的其他 zone；现有数据目录的 container/zone 集合固定，集合不一致拒绝启动。签名密钥意外更换同样拒绝启动。
 
@@ -90,6 +97,7 @@ HTTP public base URL 只接受 literal loopback IP；非 loopback 绑定必须�
 测试覆盖真实 HTTP/SQLite/文件路径、快照和增量分页、token/范围、租约竞争/持锁追平/过期/保活、资源校验/去重/成对发布、条件与 Range、接收事务及实际 SIGKILL/SIGTERM。聚焦场景入口：
 
 ```bash
+cargo test --locked --test users_http --test configuration --test startup_http --test metrics_http
 cargo test --locked --test sync_http --test leases_http --test assets_http
 cargo test --locked --test records_http --test records_store --test photo_graph --test process_restart
 cargo test --locked --lib
@@ -100,6 +108,7 @@ python tools/check-docs.py
 
 ## 设计文档
 
+- [用户认证契约](docs/contracts/authentication.md)、[多用户实现与管理](docs/design/multi-user.md)
 - [spac.md：需求与验收](spac.md)、[架构](docs/design/architecture.md)、[实施计划](docs/design/implementation-plan.md)
 - [M1 基础](docs/design/m1-foundation.md)、[M2 实现](docs/design/m2-records.md)、[元数据记录](docs/contracts/records.md)
 - [兼容范围](docs/design/protocol-compatibility.md)、[共享快照](docs/contracts/snapshots.md)、[照片字段](docs/contracts/photo-records.md)、[资源接口](docs/contracts/assets.md)
@@ -120,9 +129,9 @@ Agent 入口为 [AGENTS.md](AGENTS.md)，导航为 [Agent.md](Agent.md)。许可
 
 资源传输后 original/thumbnail 都 Published，才原子保存照片对；metadata-only 更新复用资源。上传无续传，响应丢失先查会话/operation 状态。文件强 ETag 由已验证摘要生成，query/changes/HEAD 不重新读取或计算已有文件 hash。
 
-运行接收示例：`cargo run --locked --example receive_metadata -- http://127.0.0.1:8790 local-run/api.key local-run/receiver`。它持久接收元数据与双资源待办，不下载或发布 UI 照片；pending 完成前 applied 保持原位置。服务端真实 HTTP 测试验证其接收/重启/资源确认，但不替代 C1。
+旧单账户/会话文件接入示例：`cargo run --locked --example receive_metadata -- http://127.0.0.1:8790 local-run/api.key local-run/receiver`。第二参数也可为只对用户可读的会话 Bearer 文件，`local-run/api.key` 仅适用于另行配置该文件且没有用户的旧模式。它持久接收元数据与双资源待办，不下载或发布 UI 照片；pending 完成前 applied 保持原位置。服务端真实 HTTP 测试验证其接收/重启/资源确认，但不替代 C1。
 
-首次部署参考 [deploy/README.md](deploy/README.md)，只读检查使用 `python3 tools/smoke.py http://127.0.0.1:8790 --api-key-file local-run/api.key`。GitHub CI 对 main push/PR 执行完整 Rust 闸门及独立最低版本检查。
+首次部署参考 [deploy/README.md](deploy/README.md)，只读检查使用 `python3 tools/smoke.py http://127.0.0.1:8790 --api-key-file /path/to/private/session.token`（参数同样可读登录会话文件；示例路径不由启动命令生成）。GitHub CI 对 main push/PR 执行完整 Rust 闸门及独立最低版本检查。
 
 
 运维监控使用受 Bearer 认证的 `GET /v1/metrics`，见[指标契约](docs/contracts/metrics.md)。它不向数据库排队，独立配额在普通/控制请求饱和时仍可采样；包含两个队列、传输角色占用、变化分页与正文成本。计数按本次 runId 重置，不代表客户端已同步完成。部署 smoke 同时验证此入口。
