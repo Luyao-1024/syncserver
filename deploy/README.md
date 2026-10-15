@@ -1,5 +1,7 @@
 # 部署与检查
 
+2026-10-15 已完成一次[阿里云真实部署](../docs/design/aliyun-deployment.md)，包含公网 TLS、续期模拟和资源往返验证；该记录对应具体实例与构建来源。
+
 本目录提供首次部署配置；不自动修改原 WebDAV 或用户云服务器。基本实现/验证范围见[服务端说明](../docs/design/v0.1-server.md)。服务启动必须持有数据目录独占锁，只允许一个进程管理一个目录。
 
 ## systemd
@@ -24,3 +26,17 @@ unit 的关闭等待 75 秒。客户端可能收到大文件中断，按持久�
 正式部署后备份包含 SQLite、不可变对象、签名密钥和固定 scope 配置。首次版本不提供在线备份 API；初版可先正常停止服务，再完整备份整个私有数据目录，避免复制仍活动的 WAL。保留权限及引用闭包，备份作为敏感数据存储。
 
 恢复旧备份必须显式更换 database_generation，防止旧 token 跳过恢复范围；正常重启不得换 generation。当前未正式发布，开发版数据库格式兼容不承诺。实际公网部署、容器构建、systemd 启动和远端 CI 各自记录验证结果，不以本地 HTTP 测试替代。
+
+
+## 运维监控
+
+`GET /v1/metrics` 使用同一 Bearer API key，按[指标契约](../docs/contracts/metrics.md)返回 JSON；反向代理保持 no-store，不记录 Authorization。独立监控配额不占租约控制/普通请求配额，采样不提交数据库工作。进程重启改变 runId 并重置累计计数，采集器须检测重置；ready=false 表示服务不接收同步任务。`/readyz` 另行验证数据库 ping，两个信号需分别解释。
+
+只读 smoke 验证此能力、版本、运行标识、两个队列配置以及各 zone 变化页计数；它不上传/删除资产，不替代公网 TLS、systemd 或容器实机验证。
+
+
+## Nginx HTTPS 反向代理
+
+[可运行配置模板](nginx.conf.example)转发到 loopback 8790，部署时替换 server_name 和证书路径。默认接收上限 512 MiB 与服务端默认一致；改变应用资源上限时一并调整。上传和下载关闭代理缓冲，HTTP/1.1 保留分块流，变更请求不自动重试；capability URL 带秘密查询参数，访问日志关闭。安装后先 `nginx -t`，再 reload。
+
+证书续期继续使用原 HTTP ACME webroot；部署钩子校验并 reload Nginx。替换旧服务时检查所有活动续期钩子，避免钩子重启已退役服务。凭证文件只放权限受限目录，不写入仓库或部署报告。

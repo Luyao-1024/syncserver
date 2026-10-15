@@ -2,6 +2,7 @@ mod assets;
 mod error;
 mod json;
 mod leases;
+mod metrics;
 mod records;
 mod sync;
 
@@ -34,6 +35,7 @@ pub(crate) struct AppState {
     pub ready: AtomicBool,
     admission: Arc<Semaphore>,
     control_admission: Arc<Semaphore>,
+    metrics_admission: Arc<Semaphore>,
     pub original_uploads: Arc<Semaphore>,
     pub thumbnail_uploads: Arc<Semaphore>,
     pub original_downloads: Arc<Semaphore>,
@@ -42,6 +44,8 @@ pub(crate) struct AppState {
     pub publication: Arc<std::sync::Mutex<()>>,
     requests: AtomicU64,
     rejected: AtomicU64,
+    database_change_pages: AtomicU64,
+    zone_change_pages: AtomicU64,
 }
 
 impl AppState {
@@ -71,6 +75,9 @@ impl AppState {
             control_admission: Arc::new(Semaphore::new(config.limits.control_queue_capacity)),
             requests: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            database_change_pages: AtomicU64::new(0),
+            zone_change_pages: AtomicU64::new(0),
+            metrics_admission: Arc::new(Semaphore::new(1)),
         }
     }
 }
@@ -78,6 +85,7 @@ impl AppState {
 pub(crate) fn router(state: Arc<AppState>) -> Router {
     let private = Router::new()
         .route("/v1/capabilities", get(capabilities))
+        .route("/v1/metrics", get(metrics::read))
         .route("/v1/snapshots", post(snapshot))
         .route("/v1/uploads/{id}", get(assets::session))
         .route("/v1/uploads/{id}/renew", post(assets::renew))
@@ -145,7 +153,8 @@ async fn authenticate(
         )
         .into_response();
     }
-    if !state.ready.load(Ordering::Acquire) || !state.store.accepting() {
+    let monitoring = request.uri().path() == "/v1/metrics";
+    if !monitoring && (!state.ready.load(Ordering::Acquire) || !state.store.accepting()) {
         return ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "SERVICE_UNAVAILABLE",
@@ -153,7 +162,9 @@ async fn authenticate(
         )
         .into_response();
     }
-    let Ok(_permit) = (if request.uri().path().starts_with("/v1/upload-leases") {
+    let Ok(_permit) = (if monitoring {
+        state.metrics_admission.clone()
+    } else if request.uri().path().starts_with("/v1/upload-leases") {
         state.control_admission.clone()
     } else {
         state.admission.clone()
@@ -205,9 +216,8 @@ async fn capabilities(State(state): State<Arc<AppState>>) -> Json<Value> {
         "capabilities": {
             "zoneListing": true, "recordCrud": true, "snapshots": true,
             "incrementalChanges": true, "uploadLeases": true, "fencing": true, "uploadPhases": true, "operationStatusRead": true, "tokenCurrentGate": true, "queryBatch": true, "changeAliases": true, "assetUpload": true, "assetDownload": true,
-            "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": true
+            "operationalMetrics": true, "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": true
         },
-        // Asset/upload limits are configured reservations for M4, not enabled APIs.
         "limits": state.config.limits,
         "protocolVersion": 1, "checksumAlgorithm": "SHA256", "historyRetention": "all",
         "recordFieldTypes": ["STRING","INT64","DOUBLE","TIMESTAMP","BYTES","REFERENCE",
@@ -216,9 +226,7 @@ async fn capabilities(State(state): State<Arc<AppState>>) -> Json<Value> {
         "recordLimits": { "maxOperations": crate::domain::records::MAX_OPERATIONS,
             "maxRecordBytes": crate::domain::records::MAX_RECORD_BYTES, "maxResultBytes": crate::domain::records::MAX_RESULT_BYTES },
         "recovery": state.store.metadata().recovery,
-        "metrics": { "requests": state.requests.load(Ordering::Relaxed),
-            "requestRejections": state.rejected.load(Ordering::Relaxed),
-            "database": state.store.metrics(), "assetBytesRead": state.asset_metrics.bytes_read.load(Ordering::Relaxed), "assetBytesHashed": state.asset_metrics.bytes_hashed.load(Ordering::Relaxed), "uploadedBytes": state.asset_metrics.uploaded_bytes.load(Ordering::Relaxed) }
+        "metrics": metrics::snapshot(&state)
     }))
 }
 

@@ -97,3 +97,26 @@ M1 的正文计数为 0 是尚无资产操作的事实，未满足 A01 的上传
 最终代码树执行完整 fmt/clippy/build/test；当前 58 个测试通过、无失败或忽略。新增 sync_http/leases_http/assets_http 与资产恢复单元测试验证固定水位、事件时间、别名/batch、字节预算、抢锁/持锁追平/单调过期、重启 fence、原图/缩略图真实上传与配对、100 次空变化/HEAD 零正文成本、Range/条件、失锁长流中止、跨多个 TTL 保活、持久接收事务失败/重启/双资源待办。既有 SIGKILL/nonatomic 恢复在新租约 fixture 下继续运行。
 
 容器构建、smoke 和 exact-SHA CI 的结果以交付记录为准，不将模板或未执行命令记作通过。旧 M1/M2 小节保留为阶段历史。
+
+
+## 2026-10-15：M5 运维可观测性本地验证
+
+新增 5 个 metrics_http 测试，真实 HTTP 验证 Bearer/重复认证头、连续采样不增加数据库命令或正文成本、普通/控制 HTTP 准入饱和、三个变化别名的成功页/逐 zone 错误、重启计数重置与临时双 zone 服务上的 Python 部署 smoke。扩展 startup_http 验证执行器关闭后的认证诊断；扩展数据库队列测试验证控制队列容量/满拒绝/排空；资源测试通过新接口验证真实上传/下载、100 次空变化/HEAD 和活动上传配额释放。
+
+本次最终 Rust 代码树的本地结果：
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --locked --all-targets -- -D warnings` | PASS |
+| `cargo build --locked --all-targets` | PASS |
+| `cargo test --locked --all-targets` | PASS，63 个测试，0 失败/忽略 |
+| `python tools/check-docs.py` | PASS，链接/JSON/合成 fixture 检查 |
+| `git diff --check` | PASS |
+
+只读 smoke 已由 metrics_http 对临时本地真实服务执行；这些结果不表示 systemd/容器或公网部署已验证。本次修改尚未提交/推送，新代码的远端 CI 和独立 MSRV 运行均 NOT RUN。旧 58 测试小节保留为先前阶段记录。
+
+
+## 2026-10-15：阿里云真实部署验证
+
+[部署记录](aliyun-deployment.md)列出实际运行的构建、systemd/Nginx、公网 smoke、HTTP 分块双资源往返、租约/照片对、零正文成本、重启 token、证书续期模拟与只读数据库完整性检查。服务当前有 0 条活跃记录、0 个暂存项，合成测试照片已删除，两份共 140 字节的资产按首版无 GC 规则保留。本次部署修改配置模板与文档，没有修改 Rust；新代码远端 CI 与 C1 仍未运行。

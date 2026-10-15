@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::Value;
+use std::sync::atomic::Ordering;
 fn prepare(operation: &str, value: Value) -> Result<Read, ApiError> {
     let malformed = |_| ApiError::bad_request();
     let request = match operation {
@@ -48,11 +49,32 @@ pub(super) async fn read(state: &AppState, operation: &str, value: Value) -> Res
         .read(request, state.credentials.tokens.clone())
         .await
     {
-        Ok(result) => (
-            StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            Json(result.body),
-        )
-            .into_response(),
+        Ok(result) => {
+            if result.status == 200 {
+                match operation {
+                    "changes/database" => {
+                        state.database_change_pages.fetch_add(1, Ordering::Relaxed);
+                    }
+                    "changes/zone" | "records/changes" | "zones/changes" => {
+                        let pages = result.body["zones"].as_array().map_or(0, |zones| {
+                            zones
+                                .iter()
+                                .filter(|zone| zone.get("serverErrorCode").is_none())
+                                .count()
+                        });
+                        state
+                            .zone_change_pages
+                            .fetch_add(pages as u64, Ordering::Relaxed);
+                    }
+                    _ => {}
+                }
+            }
+            (
+                StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(result.body),
+            )
+                .into_response()
+        }
         Err(error) => ApiError::from(error).into_response(),
     }
 }

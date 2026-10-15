@@ -97,3 +97,8 @@ C1 的 dirty 是本地既有同步记录上的字段，另有本地变更版本�
 租约阶段是 Delete → Modify → Create；新增时 NEW 可保留后续 META/CONTENT 位，成功创建确认登记身份后新义务转成修改/删除。callback 在同一 DB 事务登记确认并只清已完成部分，必须核对轮次与本地版本。删除条目在确认前仍有数据库记录，不能因为原图已从磁盘删除就丢掉 dirty/身份/时间。
 
 同步进度字段分 ingestToken/appliedToken；上行门槛检查后者，不要求本地 dirty 为 CLEAN。详细不变量见[上行协调](../contracts/upload-coordination.md)。
+
+
+## M5 运行期指标（2026-10-15）
+
+[运维指标](../contracts/metrics.md)存于进程计数器，不增加持久表、不分配媒体 seq、不改变 schema v5。运行标识复用本次 service_starts 的 run_id，与同步 generation 和租约 fence 独立。每次服务实例启动重新计数；队列长度和传输占用为采样值，不构成提交或客户端进度证据。

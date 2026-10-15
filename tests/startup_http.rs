@@ -221,6 +221,28 @@ async fn readiness_reflects_executor_shutdown_and_liveness_remains_available() {
         200
     );
     store.shutdown().await.unwrap();
+    let diagnostic: Value = client
+        .get(format!("{base}/v1/metrics"))
+        .bearer_auth(API_KEY)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(diagnostic["ready"], false);
+    assert_eq!(diagnostic["metrics"]["database"]["queueDepth"], 0);
+    assert_eq!(
+        client
+            .get(format!("{base}/v1/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
     assert_eq!(
         client
             .get(format!("{base}/readyz"))

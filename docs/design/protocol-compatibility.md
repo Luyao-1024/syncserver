@@ -20,11 +20,12 @@
 | `/records/modify` | POST | create、条件 update、条件 delete | 强制覆盖类型不支持；atomic 只支持单 zone |
 | `/changes/database` | POST | 哪些 zone 有变化、database token | 不代表分享权限或多账户 |
 | `/changes/zone` | POST | zones 数组、记录变化、墓碑、moreComing | 每 zone 独立 token |
+| `/zones/changes` | POST | `/changes/zone` 的同语义别名 | 与 records/changes 共享处理及监控计数 |
 | `/records/changes` | POST | `/changes/zone` 的旧接口别名 | 仅相同已核验请求形状，不兼容未知历史变体 |
 | `/internal/records/query/batch` | POST | 基本查询批次 | 不实现 Apple 的 HyperionIndexCountLookup 等私有计数索引 |
 | `/assets/upload` | POST | 分配上传 URL | Apple 加密/receipt 私有行为不支持，描述符见资源文档 |
 
-原生扩展：`GET /healthz`、`GET /readyz`、`GET /v1/capabilities`、`POST /v1/snapshots` 与固定的上传/资产路径。完整路径、JSON 与边界以[共享快照](../contracts/snapshots.md)、[照片记录](../contracts/photo-records.md)、[资源协议](../contracts/assets.md)为冻结契约。
+原生扩展：`GET /healthz`、`GET /readyz`、`GET /v1/capabilities`、受 Bearer 认证的 `GET /v1/metrics`（[运维指标契约](../contracts/metrics.md)）、`POST /v1/snapshots` 与固定的上传/资产路径。完整路径、JSON 与边界以[共享快照](../contracts/snapshots.md)、[照片记录](../contracts/photo-records.md)、[资源协议](../contracts/assets.md)为冻结契约。
 
 能力声明必须包含协议版本、摘要算法、可用操作、最大页数、历史保留模式与不支持项。只有实现且验证的能力才可标记为 enabled。
 

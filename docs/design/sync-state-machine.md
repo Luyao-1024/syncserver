@@ -76,3 +76,8 @@ v0.1 不做按 desiredRecordTypes 的增量过滤，避免略过客户端后来�
 任一阶段 LeaseLost → Aborted，不可回到该轮上行；取消当前流，所有未完成项报错，迟到成功回调无权清 dirty。前项已有效确认的提交保持成功，响应丢失的事实留到下一轮查询协调。下行仍可独立运行。
 
 ingestToken 只代表页/待办已持久接收；appliedToken 表示固定 H 的完整投影、该轮实际范围的资源/冲突协调完成。上行前比较后者；database token/query marker/snapshotToken/未结束分页不能代替它。无相关 zone 变化但 namespace H 提升时由服务端按索引做语义比较，不能依赖原始 token 字符串相等或反复空拉取。
+
+
+## M5 运维采样（2026-10-15）
+
+[监控](../contracts/metrics.md)与同步/租约状态机独立：只读采样不获取上行锁、不推进 token、不改变 phase，也不提交数据库命令。普通/控制准入饱和不占用独立监控配额；执行器关闭后监控可返回 ready=false，不能据此接受新的同步写入。变化页计数是生成响应的成本，不是客户端接收或 applied 进度。

@@ -39,6 +39,9 @@ pub struct QueueMetrics {
     pub queue_capacity: usize,
     pub queue_rejections: u64,
     pub commands_completed: u64,
+    pub control_queue_depth: usize,
+    pub control_queue_capacity: usize,
+    pub control_queue_rejections: u64,
 }
 
 enum Command {
@@ -77,6 +80,8 @@ struct Inner {
     rejections: AtomicU64,
     completed: AtomicU64,
     capacity: usize,
+    control_capacity: usize,
+    control_rejections: AtomicU64,
     shutdown: tokio::sync::Mutex<()>,
 }
 
@@ -103,6 +108,8 @@ impl Store {
             rejections: AtomicU64::new(0),
             completed: AtomicU64::new(0),
             capacity: config.limits.db_queue_capacity,
+            control_capacity: config.limits.control_queue_capacity,
+            control_rejections: AtomicU64::new(0),
             shutdown: tokio::sync::Mutex::new(()),
         });
         let worker_inner = Arc::downgrade(&inner);
@@ -256,6 +263,15 @@ impl Store {
             queue_capacity: self.inner.capacity,
             queue_rejections: self.inner.rejections.load(Ordering::Relaxed),
             commands_completed: self.inner.completed.load(Ordering::Relaxed),
+            control_queue_depth: self
+                .inner
+                .control_sender
+                .lock()
+                .ok()
+                .and_then(|s| s.as_ref().map(|tx| tx.max_capacity() - tx.capacity()))
+                .unwrap_or(0),
+            control_queue_capacity: self.inner.control_capacity,
+            control_queue_rejections: self.inner.control_rejections.load(Ordering::Relaxed),
         }
     }
     fn send(&self, command: Command) -> Result<()> {
@@ -284,6 +300,26 @@ impl Store {
         self.send(Command::Lookup(request, reply))?;
         response.await.map_err(|_| Error::WorkerFailed)?
     }
+    fn send_control(&self, command: Command) -> Result<()> {
+        let guard = self
+            .inner
+            .control_sender
+            .lock()
+            .map_err(|_| Error::WorkerFailed)?;
+        guard
+            .as_ref()
+            .ok_or(Error::Unavailable)?
+            .try_send(command)
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    self.inner
+                        .control_rejections
+                        .fetch_add(1, Ordering::Relaxed);
+                    Error::Busy
+                }
+                mpsc::error::TrySendError::Closed(_) => Error::Unavailable,
+            })
+    }
     pub(crate) async fn asset(
         &self,
         request: crate::domain::assets::AssetCommand,
@@ -294,21 +330,7 @@ impl Store {
             crate::domain::assets::AssetCommand::Validate(..)
                 | crate::domain::assets::AssetCommand::Fail(..)
         ) {
-            {
-                let sender = self
-                    .inner
-                    .control_sender
-                    .lock()
-                    .map_err(|_| Error::WorkerFailed)?;
-                sender
-                    .as_ref()
-                    .ok_or(Error::Unavailable)?
-                    .try_send(Command::Asset(request, reply))
-                    .map_err(|e| match e {
-                        mpsc::error::TrySendError::Full(_) => Error::Busy,
-                        mpsc::error::TrySendError::Closed(_) => Error::Unavailable,
-                    })?;
-            }
+            self.send_control(Command::Asset(request, reply))?;
         } else {
             self.send(Command::Asset(request, reply))?;
         }
@@ -318,22 +340,8 @@ impl Store {
         let (reply, response) = oneshot::channel();
         if matches!(request, crate::domain::leases::Control::Status(_)) {
             self.send(Command::Control(request, reply))?;
-            return response.await.map_err(|_| Error::WorkerFailed)?;
-        }
-        {
-            let guard = self
-                .inner
-                .control_sender
-                .lock()
-                .map_err(|_| Error::WorkerFailed)?;
-            guard
-                .as_ref()
-                .ok_or(Error::Unavailable)?
-                .try_send(Command::Control(request, reply))
-                .map_err(|error| match error {
-                    mpsc::error::TrySendError::Full(_) => Error::Busy,
-                    mpsc::error::TrySendError::Closed(_) => Error::Unavailable,
-                })?;
+        } else {
+            self.send_control(Command::Control(request, reply))?;
         }
         response.await.map_err(|_| Error::WorkerFailed)?
     }
@@ -400,6 +408,7 @@ mod tests {
             ("SYNC_API_KEY_FILE", "/unused/api".into()),
             ("SYNC_SIGNING_KEY_FILE", "/unused/signing".into()),
             ("SYNC_DB_QUEUE_CAPACITY", "1".into()),
+            ("SYNC_CONTROL_QUEUE_CAPACITY", "1".into()),
         ])
         .unwrap();
         let store = Store::open(
@@ -435,6 +444,20 @@ mod tests {
         assert!(matches!(store.ping().await, Err(Error::Busy)));
         assert_eq!(store.metrics().queue_depth, 1);
         assert_eq!(store.metrics().queue_rejections, 1);
+        let (control_reply, control_response) = oneshot::channel();
+        store.send_control(Command::Ping(control_reply)).unwrap();
+        drop(control_response);
+        let (extra_reply, _) = oneshot::channel();
+        assert!(matches!(
+            store.send_control(Command::Ping(extra_reply)),
+            Err(Error::Busy)
+        ));
+        let metrics = store.metrics();
+        assert_eq!(metrics.control_queue_depth, 1);
+        assert_eq!(metrics.control_queue_capacity, 1);
+        assert_eq!(metrics.control_queue_rejections, 1);
+        assert_eq!(metrics.queue_rejections, 1);
+
         // Async timers keep running while the dedicated SQLite thread is held.
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -468,7 +491,8 @@ mod tests {
         release.send(()).unwrap();
         closing.await.unwrap().unwrap();
         duplicate.await.unwrap().unwrap();
-        assert_eq!(store.metrics().commands_completed, 2);
+        assert_eq!(store.metrics().commands_completed, 3);
+        assert_eq!(store.metrics().control_queue_depth, 0);
         let reopened = Store::open(
             config,
             [1; 32],

@@ -1,0 +1,36 @@
+# Install in sites-available, then enable after setting the host and certificate.
+# Keep the existing HTTP ACME webroot server for certificate renewal.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name sync.example.invalid;
+
+    ssl_certificate /etc/letsencrypt/live/syncserver/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/syncserver/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Signed capability URLs contain secrets in their query strings.
+    access_log off;
+    error_log /var/log/nginx/syncserver-error.log crit;
+
+    # Matches the default 512 MiB asset limit. JSON limits remain in the app.
+    client_max_body_size 512m;
+    client_body_timeout 60s;
+
+    location / {
+        proxy_pass http://127.0.0.1:8790;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_next_upstream off;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+    }
+}

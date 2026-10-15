@@ -75,7 +75,7 @@ async fn upload(app: &Running, lease: &Lease, token: &Value, bytes: Vec<u8>) -> 
 }
 async fn metrics(app: &Running) -> Value {
     app.client
-        .get(format!("{}/v1/capabilities", app.base))
+        .get(format!("{}/v1/metrics", app.base))
         .bearer_auth(API_KEY)
         .send()
         .await
@@ -264,6 +264,8 @@ async fn real_pair_upload_publish_snapshot_download_and_empty_polls_never_rehash
         assert_eq!(response.bytes().await.unwrap().as_ref(), bytes);
     }
     let before = metrics(&app).await;
+    assert!(before["metrics"]["uploadedBytes"].as_u64().unwrap() > 0);
+    assert!(before["metrics"]["assetBytesRead"].as_u64().unwrap() > 0);
     let initial: Value = app
         .client
         .post(format!("{}{CK}/changes/zone", app.base))
@@ -305,6 +307,11 @@ async fn real_pair_upload_publish_snapshot_download_and_empty_polls_never_rehash
         );
     }
     let after = metrics(&app).await;
+    assert_eq!(
+        after["metrics"]["zoneChangePages"].as_u64().unwrap()
+            - before["metrics"]["zoneChangePages"].as_u64().unwrap(),
+        101
+    );
     assert_eq!(
         after["metrics"]["assetBytesHashed"],
         before["metrics"]["assetBytesHashed"]
@@ -623,6 +630,9 @@ async fn stable_lease_identity_heartbeats_keep_a_body_alive_over_multiple_ttls()
         );
         sender.send(vec![9]).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        let diagnostic = metrics(&app).await;
+        assert_eq!(diagnostic["metrics"]["transfers"]["originalUploads"], 1);
+        assert_eq!(diagnostic["metrics"]["transfers"]["thumbnailUploads"], 0);
     }
     drop(sender);
     let response = task.await.unwrap();
@@ -630,6 +640,10 @@ async fn stable_lease_identity_heartbeats_keep_a_body_alive_over_multiple_ttls()
     let result: Value = response.json().await.unwrap();
     assert_eq!(status, 200, "{result}");
     assert_eq!(result["singleFile"]["size"], 6);
+    assert_eq!(
+        metrics(&app).await["metrics"]["transfers"]["originalUploads"],
+        0
+    );
     app.stop().await;
 }
 

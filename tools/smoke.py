@@ -35,7 +35,7 @@ def call(path, body=None, authenticated=True):
 assert call("/healthz", authenticated=False)["status"] == "alive"
 assert call("/readyz", authenticated=False)["status"] == "ready"
 caps = call("/v1/capabilities")
-for name in ["recordCrud", "snapshots", "incrementalChanges", "uploadLeases", "assetUpload", "assetDownload", "photoPublication"]:
+for name in ["recordCrud", "snapshots", "incrementalChanges", "uploadLeases", "assetUpload", "assetDownload", "photoPublication", "operationalMetrics"]:
     assert caps["capabilities"][name], name
 container = urllib.parse.quote(caps["namespace"]["container"], safe="")
 ck = f"/database/1/{container}/production/private"
@@ -45,4 +45,10 @@ for zone in zones:
     delta = call(ck + "/changes/zone", {"zones": [{"zoneID": zone["zoneID"], "syncToken": snapshot["syncToken"]}]})["zones"][0]
     assert "serverErrorCode" not in delta
     assert isinstance(delta["moreComing"], bool)
-print(f"PASS: health, readiness, capabilities, {len(zones)} zone snapshots and delta reads")
+diagnostic = call("/v1/metrics")
+assert diagnostic["version"] == 1 and diagnostic["ready"] is True
+assert diagnostic["runId"] == caps["recovery"]["runId"]
+assert diagnostic["metrics"]["database"]["queueCapacity"] == caps["limits"]["dbQueueCapacity"]
+assert diagnostic["metrics"]["database"]["controlQueueCapacity"] == caps["limits"]["controlQueueCapacity"]
+assert diagnostic["metrics"]["zoneChangePages"] >= len(zones)
+print(f"PASS: health, readiness, capabilities, operational metrics, {len(zones)} zone snapshots and delta reads")
