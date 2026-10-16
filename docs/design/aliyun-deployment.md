@@ -154,3 +154,11 @@ SYNC_LOG_QUEUE_CAPACITY=4096
 - 服务器 `/tmp/metadata.sqlite`、`-shm`、`-wal` 是 2026-10-15 17:13 留下的 root 0644 拷贝，含记录数据，属上次排查遗留；本次未删除，建议清理。
 - 仍未实现自动备份恢复工具、3 万记录基准与真实客户端（C1）验收；本次也没有做长时间稳定性观察。
 - 三个代码提交此前仅在本地；推送与推送后的远端 CI 结果以 Git 交付记录和 Actions 运行状态为准，本次部署不等同于远端 CI 通过。
+
+### 推送与远端 CI
+
+部署完成后按要求先推送再收尾复验：`main` 从 `f2d9f11` 推到 `ca9fb6a`，包含 `6e66cb3`、`d8182c6`、`935bf3b` 与本次部署记录。GitHub Actions `Rust CI` 运行 `38863345409`（headSha `ca9fb6a0e69726bf81658be5ea11776dbceeb64b`）的 `verify` 与 `msrv` 两个 job 均为 success。
+
+服务器清单里的 `baseCommit` 仍是构建来源 `935bf3b`：之后的提交只改 Markdown，`Cargo.toml`、`Cargo.lock` 与 `src` 未变，按上文摘要方法在 `ca9fb6a` 上重算仍得 `b7577917…`，因此运行中的二进制与已推送代码逐字节对应。
+
+推送后复验：公网 `tools/smoke.py … --username deploycheck` 再次 PASS；`syncserver.service` active、`NRestarts=0`、自 `14:40:16 CST` 连续运行；database generation 与 346 条记录不变；`logs.sqlite` 原始窗口累积到 862 行、压缩段仍为 0（尚未跨过 24 小时阈值）。
