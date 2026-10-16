@@ -68,10 +68,12 @@
 
 ## 连接与日常检查
 
-用户机器上连接说明保存在 `/home/luyao/.config/syncserver/aliyun/connection.json`，API key 保存在同目录 `api.key`；目录 0700、文件 0600。签名私钥保留在服务器，不下发客户端。
+用户机器上连接说明保存在 `/home/luyao/.config/syncserver/aliyun/connection.json`；目录 0700、文件 0600。签名私钥保留在服务器，不下发客户端。
+
+2026-10-16 该部署改为账户会话接入：本地与服务器的 `api.key` 均已删除，`connection.json` 不再引用 API key，只读冒烟使用 `deploycheck` 账户，其口令保存在同目录 `deploycheck.pass`（0600，不写入仓库）。首次部署时使用 `api.key` 是当时的记录事实，保留在上文不做改写。
 
 ```sh
-python tools/smoke.py https://47.103.11.237 --api-key-file /home/luyao/.config/syncserver/aliyun/api.key
+python3 tools/smoke.py https://47.103.11.237 --username deploycheck --password-stdin < /home/luyao/.config/syncserver/aliyun/deploycheck.pass
 ssh aliyun 'sudo systemctl status syncserver.service --no-pager'
 ssh aliyun 'sudo journalctl -u syncserver.service -n 50 --no-pager'
 ```
@@ -162,3 +164,21 @@ SYNC_LOG_QUEUE_CAPACITY=4096
 服务器清单里的 `baseCommit` 仍是构建来源 `935bf3b`：之后的提交只改 Markdown，`Cargo.toml`、`Cargo.lock` 与 `src` 未变，按上文摘要方法在 `ca9fb6a` 上重算仍得 `b7577917…`，因此运行中的二进制与已推送代码逐字节对应。
 
 推送后复验：公网 `tools/smoke.py … --username deploycheck` 再次 PASS；`syncserver.service` active、`NRestarts=0`、自 `14:40:16 CST` 连续运行；database generation 与 346 条记录不变；`logs.sqlite` 原始窗口累积到 862 行、压缩段仍为 0（尚未跨过 24 小时阈值）。
+
+### 退役 legacy API key 与清理临时文件（同日）
+
+用户确认后续不再使用 API key，并授权清理。服务器只删凭证与配置键，签名密钥与数据未动：
+
+| 动作 | 结果 |
+|---|---|
+| 删除 `/etc/syncserver/server.env` 的 `SYNC_API_KEY_FILE` 行 | 剩余 20 个键，其余值未变 |
+| 删除 `/etc/syncserver/api.key` | `/etc/syncserver` 只剩 `deployment.json`、`deployment-report.md`、`server.env`、`signing.key` |
+| `systemctl restart syncserver.service` | `07:04:51Z` 重启 → `07:04:55Z` active，约 4 秒，`NRestarts=0` |
+| 本地 `~/.config/syncserver/aliyun/api.key` | 已删除；`connection.json` 改写为账户会话说明（`deploycheck` + `deploycheck.pass`），目录 0700、文件 0600 |
+| 服务器 `/tmp` 遗留 | 删除 `metadata.sqlite`、`metadata.sqlite-shm`、`metadata.sqlite-wal`（root 0644、2026-10-15 17:13 的约 6.3 MB 记录副本）与 `syncserver.new`（`b6e2d346…` 旧二进制，升级备份内已有同摘要副本） |
+
+空 `api_key_file` 是代码显式支持的分支（`src/credentials.rs:19` 将 `api_digest` 置为 `None`），`SYNC_API_KEY_FILE` 本就是可选键，见[多用户实现](multi-user.md)；因此 legacy 请求认证消失后，账户会话路径不受影响。
+
+复验：重启后 8 分钟内 journald 聚合 643 条带 `status` 的记录全部 200，没有 401/403/409/410，现网客户端继续轮询 `changes/zone` 与租约阶段；database generation `13e1db63-5de1-40ea-ac2f-1d33c39bddcd`、346 条记录、`users=3 / sessions=10` 不变；`logs.sqlite` 原始窗口继续累积；公网 `python3 tools/smoke.py … --username deploycheck --password-stdin` PASS。
+
+未处理事项按用户要求保留：证书 `notAfter=Oct 22 13:29:56 2026 GMT` 且 `certbot.timer` 仍 inactive，需要后续单独授权再动。
