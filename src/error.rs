@@ -29,6 +29,29 @@ pub enum Error {
     Unavailable,
     #[error("WORKER_FAILED: database executor terminated unexpectedly")]
     WorkerFailed,
+    #[error("LOG_STORAGE_FAILED: log database operation failed")]
+    LogStorage,
+}
+
+impl Error {
+    /// Short stable code without detail text, safe for logs and operator output.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Protocol(_) => "PROTOCOL_ERROR",
+            Self::Config(_) => "CONFIG_INVALID",
+            Self::ScopeMismatch => "CONFIG_SCOPE_MISMATCH",
+            Self::SigningKeyMismatch => "SIGNING_KEY_MISMATCH",
+            Self::DataDirLocked => "DATA_DIR_LOCKED",
+            Self::SchemaUnsupported => "SCHEMA_UNSUPPORTED",
+            Self::RecoveryFailed => "RECOVERY_FAILED",
+            Self::Database(_) => "DATABASE_ERROR",
+            Self::Io(_) => "IO_ERROR",
+            Self::Busy => "SERVER_BUSY",
+            Self::Unavailable => "SERVICE_UNAVAILABLE",
+            Self::WorkerFailed => "WORKER_FAILED",
+            Self::LogStorage => "LOG_STORAGE_FAILED",
+        }
+    }
 }
 
 impl From<std::io::Error> for Error {

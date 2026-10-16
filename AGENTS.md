@@ -37,3 +37,8 @@
 ## 多用户入口
 
 先读[认证契约](docs/contracts/authentication.md)与[多用户实现](docs/design/multi-user.md)。会话先解析为服务端拥有的账户上下文，再访问记录/资源/租约；不能从请求参数任意选择 namespace。账户密码仅 Argon2id，随机会话仅存摘要，资源须同时验证用户会话及原有能力。用户管理 CLI 不删除照片；旧数据只由唯一显式接管用户拥有。客户端协议仍只引用服务端契约。
+
+
+## 日志与可观测入口
+
+先读[日志与留存契约](docs/contracts/logging.md)与 [src/logging/AGENTS.md](src/logging/AGENTS.md)。日志单管线脱敏，落 `logs.sqlite`：阈值内原样保留且无上限，超过阈值的记录压缩进归档段，归档总量受上限约束。日志不进同步事务、不改元数据 schema 与 generation；凭据字段永远脱敏，库内容字段只在 payload 开启时可见。新增日志站点按契约的等级策略归类，开发环境用 `SYNC_LOG_LEVEL=debug` 与 `SYNC_LOG_PAYLOAD=on` 获取详细同步数据，生产保持默认。

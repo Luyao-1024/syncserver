@@ -3,7 +3,7 @@ use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
 };
-use syncserver::{Config, Error, Server};
+use syncserver::{Config, Error, LogFormat, LogLevel, Server};
 
 fn pairs() -> Vec<(&'static str, String)> {
     vec![
@@ -165,5 +165,69 @@ fn upload_control_defaults_and_heartbeat_bounds_are_explicit() {
         ];
         config.extend(pairs);
         assert!(syncserver::Config::from_pairs(config).is_err());
+    }
+}
+
+#[test]
+fn logging_configuration_defaults_bounds_and_detail_switch() {
+    let default = Config::from_pairs(pairs()).unwrap();
+    assert_eq!(default.logging().level, LogLevel::Info);
+    assert_eq!(default.logging().persist_level, LogLevel::Info);
+    assert_eq!(default.logging().format, LogFormat::Text);
+    assert!(!default.logging().payload_detail);
+    assert_eq!(default.logging().retention_raw_secs, 86_400);
+    assert_eq!(default.logging().archive_max_bytes, 1_073_741_824);
+    assert_eq!(default.logging().queue_capacity, 4096);
+    assert!(default.logging().level.includes(LogLevel::Warn));
+    assert!(!default.logging().level.includes(LogLevel::Debug));
+    assert!(!LogLevel::Off.includes(LogLevel::Error));
+
+    // Development profile: debug everywhere plus payload detail, persistence inherits.
+    let mut input = pairs();
+    input.extend([
+        ("SYNC_LOG_LEVEL", "debug".to_owned()),
+        ("SYNC_LOG_PAYLOAD", "on".to_owned()),
+    ]);
+    let development = Config::from_pairs(input).unwrap();
+    assert_eq!(development.logging().level, LogLevel::Debug);
+    assert_eq!(development.logging().persist_level, LogLevel::Debug);
+    assert!(development.logging().payload_detail);
+
+    // Persistence may stay narrower than the console and use a machine-readable format.
+    let mut input = pairs();
+    input.extend([
+        ("SYNC_LOG_LEVEL", "debug".to_owned()),
+        ("SYNC_LOG_PERSIST_LEVEL", "warn".to_owned()),
+        ("SYNC_LOG_FORMAT", "json".to_owned()),
+    ]);
+    let split = Config::from_pairs(input).unwrap();
+    assert_eq!(split.logging().level, LogLevel::Debug);
+    assert_eq!(split.logging().persist_level, LogLevel::Warn);
+    assert_eq!(split.logging().format, LogFormat::Json);
+
+    let mut input = pairs();
+    input.push(("SYNC_LOG_PERSIST_LEVEL", "off".to_owned()));
+    assert_eq!(
+        Config::from_pairs(input).unwrap().logging().persist_level,
+        LogLevel::Off
+    );
+
+    for (key, invalid) in [
+        ("SYNC_LOG_LEVEL", "verbose"),
+        ("SYNC_LOG_PERSIST_LEVEL", ""),
+        ("SYNC_LOG_FORMAT", "yaml"),
+        ("SYNC_LOG_PAYLOAD", "yes"),
+        ("SYNC_LOG_RETENTION_RAW_SECS", "0"),
+        ("SYNC_LOG_RETENTION_RAW_SECS", "2592001"),
+        ("SYNC_LOG_RETENTION_RAW_SECS", "1d"),
+        ("SYNC_LOG_ARCHIVE_MAX_BYTES", "4095"),
+        ("SYNC_LOG_ARCHIVE_MAX_BYTES", "1099511627777"),
+        ("SYNC_LOG_QUEUE_CAPACITY", "15"),
+        ("SYNC_LOG_QUEUE_CAPACITY", "1048577"),
+    ] {
+        let mut input = pairs();
+        input.push((key, invalid.into()));
+        let error = Config::from_pairs(input).unwrap_err();
+        assert!(matches!(error, Error::Config(_)), "{key}");
     }
 }

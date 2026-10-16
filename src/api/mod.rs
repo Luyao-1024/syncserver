@@ -24,9 +24,10 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 use uuid::Uuid;
 
 pub(crate) struct AppState {
@@ -124,7 +125,46 @@ async fn response_metadata(
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let request_id = Uuid::new_v4();
-    let mut response = next.run(request).await;
+    let method = request.method().clone();
+    let route = request.uri().path().to_owned();
+    // Health, readiness and metrics are polled continuously and must not drown the
+    // operational stream, so probe traffic stays at debug.
+    let probe = matches!(route.as_str(), "/healthz" | "/readyz" | "/v1/metrics");
+    let started = Instant::now();
+    let mut response = next
+        .run(request)
+        .instrument(tracing::info_span!(
+            "request",
+            request_id = %request_id,
+            method = %method,
+            route = %route,
+        ))
+        .await;
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let error_code = response
+        .extensions()
+        .get::<error::ResponseError>()
+        .map(|value| value.0);
+    let status = response.status().as_u16();
+    let level = if probe {
+        tracing::Level::DEBUG
+    } else if status >= 500 {
+        tracing::Level::ERROR
+    } else if status >= 400 {
+        tracing::Level::WARN
+    } else {
+        tracing::Level::INFO
+    };
+    log_at!(
+        level,
+        request_id = %request_id,
+        method = %method,
+        route = route,
+        status,
+        duration_ms,
+        error_code,
+        "request completed"
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -134,7 +174,6 @@ async fn response_metadata(
     response
         .headers_mut()
         .insert("x-content-type-options", "nosniff".parse().unwrap());
-    tracing::info!(%request_id, status = response.status().as_u16(), database = "private", "request completed");
     response
 }
 

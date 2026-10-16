@@ -30,6 +30,7 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1"
 argon2 = { version = "0.5.3", features = ["zeroize"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

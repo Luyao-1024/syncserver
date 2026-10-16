@@ -33,6 +33,7 @@ pub struct Config {
     pub(crate) namespace: Namespace,
     pub(crate) zones: Vec<String>,
     pub(crate) limits: Limits,
+    pub(crate) log: LogSettings,
 }
 
 const KEYS: &[&str] = &[
@@ -54,6 +55,13 @@ const KEYS: &[&str] = &[
     "SYNC_LEASE_TTL_SECS",
     "SYNC_LEASE_HEARTBEAT_SECS",
     "SYNC_CONTROL_QUEUE_CAPACITY",
+    "SYNC_LOG_LEVEL",
+    "SYNC_LOG_PERSIST_LEVEL",
+    "SYNC_LOG_FORMAT",
+    "SYNC_LOG_PAYLOAD",
+    "SYNC_LOG_RETENTION_RAW_SECS",
+    "SYNC_LOG_ARCHIVE_MAX_BYTES",
+    "SYNC_LOG_QUEUE_CAPACITY",
 ];
 
 impl Config {
@@ -183,6 +191,45 @@ impl Config {
                 "thumbnail limit exceeds 2 MiB, asset size overflows SQLite, or total timeout is below idle timeout",
             ));
         }
+        let level = LogLevel::parse(&value("SYNC_LOG_LEVEL", "info"))?;
+        // Persistence may be narrower than the console; "off" disables the log database.
+        let persist_level = match values.get("SYNC_LOG_PERSIST_LEVEL") {
+            Some(raw) => LogLevel::parse(raw)?,
+            None => level,
+        };
+        let payload_text = value("SYNC_LOG_PAYLOAD", "off").trim().to_ascii_lowercase();
+        let payload_detail = match payload_text.as_str() {
+            "off" => false,
+            "on" => true,
+            _ => return Err(Error::Config("SYNC_LOG_PAYLOAD must be off or on")),
+        };
+        let retention_raw_secs = number("SYNC_LOG_RETENTION_RAW_SECS", 86_400)?;
+        let archive_max_bytes = number("SYNC_LOG_ARCHIVE_MAX_BYTES", 1_073_741_824)?;
+        let queue_capacity = sized("SYNC_LOG_QUEUE_CAPACITY", 4096)?;
+        if !(1..=2_592_000).contains(&retention_raw_secs) {
+            return Err(Error::Config(
+                "raw log retention must be between one second and 30 days",
+            ));
+        }
+        if !(4096..=1_099_511_627_776).contains(&archive_max_bytes) {
+            return Err(Error::Config(
+                "compressed log archive must be between 4 KiB and 1 TiB",
+            ));
+        }
+        if !(16..=1_048_576).contains(&queue_capacity) {
+            return Err(Error::Config(
+                "log queue capacity must be between 16 and 1048576 records",
+            ));
+        }
+        let log = LogSettings {
+            level,
+            persist_level,
+            format: LogFormat::parse(&value("SYNC_LOG_FORMAT", "text"))?,
+            payload_detail,
+            retention_raw_secs,
+            archive_max_bytes,
+            queue_capacity,
+        };
         Ok(Self {
             bind,
             data_dir: required("SYNC_DATA_DIR")?,
@@ -195,11 +242,16 @@ impl Config {
             namespace: Namespace::configured(container),
             zones: zones.into_iter().collect(),
             limits,
+            log,
         })
     }
 
     pub fn limits(&self) -> &Limits {
         &self.limits
+    }
+
+    pub fn logging(&self) -> &LogSettings {
+        &self.log
     }
 
     pub fn bind_address(&self) -> SocketAddr {
@@ -208,6 +260,88 @@ impl Config {
     pub fn data_directory(&self) -> &std::path::Path {
         &self.data_dir
     }
+}
+
+/// Severity threshold shared by the console writer and the persisted log database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+    fn rank(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::Error => 1,
+            Self::Warn => 2,
+            Self::Info => 3,
+            Self::Debug => 4,
+            Self::Trace => 5,
+        }
+    }
+    /// A threshold emits a record only when that record is at least as severe as it.
+    pub fn includes(self, record: Self) -> bool {
+        self != Self::Off && record != Self::Off && record.rank() <= self.rank()
+    }
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "error" => Ok(Self::Error),
+            "warn" => Ok(Self::Warn),
+            "info" => Ok(Self::Info),
+            "debug" => Ok(Self::Debug),
+            "trace" => Ok(Self::Trace),
+            _ => Err(Error::Config(
+                "log level must be off, error, warn, info, debug or trace",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    Text,
+    Json,
+}
+
+impl LogFormat {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            _ => Err(Error::Config("SYNC_LOG_FORMAT must be text or json")),
+        }
+    }
+}
+
+/// Log pipeline settings; deliberately holds no credential or path material.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogSettings {
+    pub level: LogLevel,
+    pub persist_level: LogLevel,
+    pub format: LogFormat,
+    pub payload_detail: bool,
+    pub retention_raw_secs: u64,
+    pub archive_max_bytes: u64,
+    pub queue_capacity: usize,
 }
 
 fn safe_name(value: &str) -> bool {

@@ -75,6 +75,12 @@ impl Sink {
             prefix.extend_from_slice(&chunk[..take]);
         }
         if size != self.session.expected_size {
+            tracing::warn!(
+                upload_id = %self.session.id,
+                declared_bytes = self.session.expected_size,
+                received_bytes = size,
+                "upload body length did not match the reservation"
+            );
             return Err(Failure::new(
                 400,
                 "UPLOAD_SIZE_MISMATCH",
@@ -89,6 +95,13 @@ impl Sink {
             .as_ref()
             .is_some_and(|expected| expected != &sha)
         {
+            // Content digests only appear when development detail logging is enabled.
+            tracing::warn!(
+                upload_id = %self.session.id,
+                declared_digest = ?self.session.expected_sha256,
+                verified_digest = %sha,
+                "uploaded bytes did not match the expected digest"
+            );
             return Err(Failure::new(
                 400,
                 "CHECKSUM_MISMATCH",

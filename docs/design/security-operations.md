@@ -38,6 +38,13 @@
 | SYNC_LEASE_HEARTBEAT_SECS | 默认 30，客户端推荐保活周期 |
 | SYNC_CONTROL_QUEUE_CAPACITY | 默认 16，独立控制 HTTP/数据库配额 |
 | SYNC_JSON_BODY_LIMIT | 默认 1048576（1 MiB），必须正整数 |
+| SYNC_LOG_LEVEL | 默认 info，控制台最低等级；`off` 不打印 |
+| SYNC_LOG_PERSIST_LEVEL | 默认继承 SYNC_LOG_LEVEL，落库最低等级；`off` 不创建日志库 |
+| SYNC_LOG_FORMAT | 默认 text，进程标准输出格式，可选 json |
+| SYNC_LOG_PAYLOAD | 默认 off，开启且等级含 debug 时才渲染记录/相册内容字段 |
+| SYNC_LOG_RETENTION_RAW_SECS | 默认 86400（1 天），未压缩窗口阈值，1–2592000 |
+| SYNC_LOG_ARCHIVE_MAX_BYTES | 默认 1073741824（1 GiB），压缩归档总量上限 |
+| SYNC_LOG_QUEUE_CAPACITY | 默认 4096，待落库队列容量，16–1048576 |
 
 数值和 URL 在启动时校验。SYNC_BIND 非 loopback 时 public base 必须为 HTTPS，不能使用默认 HTTP 回环地址充当公开配置。没有密钥、不可写目录或公开 URL 错误时启动失败，不降级为无认证服务。上述 v1 默认值已固定，M1 配置测试和能力声明返回实际配置；变更需同步契约。namespace 与 zone 集合在初始化后固定，顺序调整不算集合变化；不一致按 CONFIG_SCOPE_MISMATCH 拒绝启动。
 
@@ -61,7 +68,7 @@ systemd 使用独立用户、受限目录和明确的关闭超时。容器只挂
 
 ## 可观察性
 
-日志包含 request_id、范围和错误类别，不包含密钥、原始私密字段或完整能力 URL。路径和 recordName 可能包含个人信息，默认避免输出完整值。
+日志由单一管线渲染并落库，等级、阈值、脱敏与读取入口见[日志与留存契约](../contracts/logging.md)。每条请求日志带 `request_id`、route、状态、耗时与错误类别；密钥、token、能力 URL 与请求正文原文一律不写，路径和 recordName 等库内容字段默认折叠为 `[detail-off]`，只在显式开启 payload 且等级含 debug 时可见。
 
 健康、就绪、队列长度、上传字节、哈希字节、变化页数和恢复失败计数须可观测。v0.1 不把 metrics 地址当作同步 API。
 
@@ -98,3 +105,12 @@ leaseToken 是秘密，与 Bearer/资源凭证不同域；deviceId 不足以授�
 ## 多用户运维补充
 
 同用户的设备共享该用户上行租约；不同用户不竞争同一租约或写入队列。认证目录包含用户 UUID/密码散列/会话摘要，备份须与各用户存储及签名配置共同保留。恢复旧认证备份后应撤销恢复出来的旧会话。管理员账户命令不删除照片，不能把禁用账户当作数据删除。当前实施与验证见[多用户说明](multi-user.md)。
+
+
+## 2026-10-16：日志落库与留存
+
+`logs.sqlite` 与元数据库分离：未压缩窗口内的日志原样保留且不设条数或字节上限，超过 `SYNC_LOG_RETENTION_RAW_SECS` 的记录压缩成 gzip NDJSON 段，压缩总量受 `SYNC_LOG_ARCHIVE_MAX_BYTES` 约束，超限时先整段删除最旧段并留 `warn`。归档段带 SHA-256 校验和，读取时校验而非静默跳过。
+
+日志库、归档 payload 与数据目录同处 0700 目录/0600 文件的私有权限内，备份须按敏感数据处理，并沿用先停服务再完整备份数据目录的流程。落库队列有界，满时丢最新记录并计数，不阻塞请求线程；进程崩溃最多丢失最后一次提交之后的日志，日志不承担同步真值。
+
+`GET /v1/metrics` 的 `metrics.logging` 只读增量计数器，不打开日志库；`syncserver logs` 只读查询不取数据目录锁，可在服务运行时执行。日志不改变同步 token、快照、租约、资源或 database generation 的语义。开发环境推荐 `SYNC_LOG_LEVEL=debug` 加 `SYNC_LOG_PAYLOAD=on` 以详细记录同步各阶段数据，生产保持默认 `info` 与 `off`。

@@ -336,6 +336,13 @@ async fn finish_upload(
         AssetReply::Verified(v) => v,
         _ => return Err(Error::RecoveryFailed),
     };
+    // Capture the summary before the publisher consumes the verified asset.
+    let (asset_id, session_id, asset_bytes, content_digest) = (
+        verified.asset.asset_id,
+        verified.session_id,
+        verified.asset.size,
+        verified.asset.sha256.clone(),
+    );
     state
         .store
         .asset(AssetCommand::Validate(id, proof.clone()))
@@ -358,7 +365,17 @@ async fn finish_upload(
     .await?;
     let reply = state.store.asset(AssetCommand::Complete(id, proof)).await?;
     match reply {
-        AssetReply::Json(value) => Ok(value),
+        AssetReply::Json(value) => {
+            tracing::info!(
+                upload_id = %session_id,
+                asset_id = %asset_id,
+                asset_role = claims.role.as_str(),
+                asset_bytes,
+                content_digest = %content_digest,
+                "asset verified and published"
+            );
+            Ok(value)
+        }
         _ => Err(Error::RecoveryFailed),
     }
 }

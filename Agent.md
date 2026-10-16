@@ -12,6 +12,7 @@
 | 持久化、游标与事务 | [src/store/AGENTS.md](src/store/AGENTS.md) |
 | 上传、对象和下载 | [src/assets/AGENTS.md](src/assets/AGENTS.md) |
 | 后台恢复与调度 | [src/jobs/AGENTS.md](src/jobs/AGENTS.md) |
+| 日志、脱敏与留存 | [src/logging/AGENTS.md](src/logging/AGENTS.md) |
 | 测试 | [tests/AGENTS.md](tests/AGENTS.md) |
 | 设计文档 | [docs/AGENTS.md](docs/AGENTS.md) |
 | 部署 | [deploy/AGENTS.md](deploy/AGENTS.md) |

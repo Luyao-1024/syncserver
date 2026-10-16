@@ -54,8 +54,20 @@ async fn login_inner(state: Arc<AppState>, request: Request) -> Response {
     })
     .await
     {
-        Ok(Ok(Some(session))) => Json(session).into_response(),
-        Ok(Ok(None)) => rejected(),
+        Ok(Ok(Some(issued))) => {
+            tracing::info!(
+                user_id = %issued.user.id,
+                username = %issued.user.username,
+                expires_at = issued.expires_at,
+                "session issued"
+            );
+            Json(issued).into_response()
+        }
+        Ok(Ok(None)) => {
+            // The username is only rendered when development detail logging is enabled.
+            tracing::warn!(username = %name, "authentication rejected");
+            rejected()
+        }
         Ok(Err(e)) => ApiError::from(e).into_response(),
         Err(_) => ApiError::from(crate::Error::WorkerFailed).into_response(),
     }
@@ -81,9 +93,12 @@ fn limited() -> Response {
 }
 pub(super) async fn logout(
     State(root): State<Arc<AppState>>,
-    Extension(_user): Extension<Arc<AppState>>,
+    Extension(current): Extension<Arc<AppState>>,
     request: Request,
 ) -> Response {
+    if let Some(user) = current.user.as_ref() {
+        tracing::info!(user_id = %user.id, username = %user.username, "session revocation requested");
+    }
     let Some(authority) = root.authority.as_ref() else {
         return ApiError::from(crate::Error::Unavailable).into_response();
     };

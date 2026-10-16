@@ -35,6 +35,22 @@ unit 的关闭等待 75 秒。客户端可能收到大文件中断，按持久�
 只读 smoke 验证此能力、版本、运行标识、两个队列配置以及各 zone 变化页计数；它不上传/删除资产，不替代公网 TLS、systemd 或容器实机验证。
 
 
+## 日志与留存
+
+unit 与容器都不重定向标准输出：控制台日志由 journald（`journalctl -u syncserver`）或容器日志驱动负责留存与轮转，服务端不代为配置轮转，也不读取自己的 stdout。`SYNC_LOG_FORMAT=json` 让 stdout 成为逐行 JSON，便于日志驱动采集；`systemd-journald` 的保留空间需按主机情况自行确认，默认上限可能早于服务端阈值就丢弃 stdout。
+
+`logs.sqlite` 落在数据目录内（systemd 下即 `/var/lib/syncserver`），随 StateDirectory 的 0700 权限受保护，`ProtectSystem=strict` 不影响其写入。默认阈值是一天：窗口内的日志原样保存且**不设条数或字节上限**，超过 `SYNC_LOG_RETENTION_RAW_SECS` 的记录压缩为 gzip 段，压缩总量不超过 `SYNC_LOG_ARCHIVE_MAX_BYTES`（默认 1 GiB），超限时先整段删除最旧段。磁盘水位告警须把未压缩窗口计入：突发调试或长时间高请求量都会让当天日志显著增长，可通过 `GET /v1/metrics` 的 `metrics.logging.rawRows`/`archiveBytes` 观察。
+
+排查用 `syncserver logs`（只读，不取数据目录锁，服务运行时可用）：
+
+```bash
+sudo -u syncserver sh -c 'set -a; . /etc/syncserver/server.env; set +a; syncserver logs --level warn --since 24h'
+sudo -u syncserver sh -c 'set -a; . /etc/syncserver/server.env; set +a; syncserver logs --request-id ID --archive --json'
+```
+
+命令与其他子命令一样从环境变量读取配置，至少需要 `SYNC_DATA_DIR` 与 `SYNC_SIGNING_KEY_FILE` 存在（后者只参与配置校验，命令不读取其内容），因此上面先载入 `server.env`。日志包含请求路径、错误类别与（开启 payload 时）记录名等运维信息，属敏感数据：备份须按敏感数据保留，不导出到不受控位置，也不长期开启 `SYNC_LOG_PAYLOAD`。契约与等级策略见[日志与留存契约](../docs/contracts/logging.md)。
+
+
 ## Nginx HTTPS 反向代理
 
 [可运行配置模板](nginx.conf.example)转发到 loopback 8790，部署时替换 server_name 和证书路径。默认接收上限 512 MiB 与服务端默认一致；改变应用资源上限时一并调整。上传和下载关闭代理缓冲，HTTP/1.1 保留分块流，变更请求不自动重试；capability URL 带秘密查询参数，访问日志关闭。安装后先 `nginx -t`，再 reload。

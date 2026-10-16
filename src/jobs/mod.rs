@@ -41,12 +41,20 @@ pub(crate) fn recover(
     let (asset_bytes_read, asset_bytes_hashed) = crate::assets::recover(connection, root)?;
     // Recovery phase boundary is durable before the service becomes Ready.
     connection.execute("UPDATE service_starts SET state='Ready', recovered_at_ms=?2 WHERE run_id=?1 AND state='Recovering'", params![run_id.to_string(), now_ms()?])?;
-    Ok(RecoveryReport {
+    let report = RecoveryReport {
         run_id,
         interrupted_starts: interrupted as u64,
         asset_bytes_read,
         asset_bytes_hashed,
-    })
+    };
+    tracing::info!(
+        run_id = %report.run_id,
+        interrupted_starts = report.interrupted_starts,
+        recovery_bytes_read = report.asset_bytes_read,
+        recovery_bytes_verified = report.asset_bytes_hashed,
+        "startup recovery completed"
+    );
+    Ok(report)
 }
 
 pub(crate) fn finish(connection: &mut Connection, run_id: Uuid) -> Result<()> {
@@ -55,6 +63,7 @@ pub(crate) fn finish(connection: &mut Connection, run_id: Uuid) -> Result<()> {
         return Err(Error::RecoveryFailed);
     }
     connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    tracing::info!(run_id = %run_id, "service stopped after draining queued work");
     Ok(())
 }
 

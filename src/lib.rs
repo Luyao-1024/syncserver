@@ -1,4 +1,9 @@
 //! Incremental photo metadata, fenced upload leases and immutable paired resources.
+
+// Declared first because its level-policy macro is crate-wide.
+#[macro_use]
+pub mod logging;
+
 mod api;
 mod assets;
 mod auth;
@@ -12,7 +17,7 @@ mod tokens;
 pub mod user_cli;
 pub mod users;
 
-pub use config::{Config, Limits};
+pub use config::{Config, Limits, LogFormat, LogLevel, LogSettings};
 pub use error::{Error, Result};
 use std::{
     future::Future,
@@ -41,6 +46,9 @@ impl Server {
             credentials.tokens.clone(),
         )
         .await?;
+        // The data directory lock is ours only after the store is open, so this is the
+        // first moment the log database may be written.
+        crate::logging::activate(&config.data_dir)?;
         let root = config.data_dir.clone();
         let users = tokio::task::spawn_blocking(move || users::Users::open(&root))
             .await
@@ -73,7 +81,8 @@ impl Server {
         if let Some(authority) = &self.state.authority {
             authority.shutdown().await?;
         }
-        self.state.store.shutdown().await
+        let database = self.state.store.shutdown().await;
+        database.and(crate::logging::shutdown())
     }
 
     /// Listener ownership belongs to this server invocation. Graceful termination
@@ -94,6 +103,8 @@ impl Server {
             authority.shutdown().await?;
         }
         let database = self.state.store.shutdown().await;
+        let logging = crate::logging::shutdown();
+        let database = database.and(logging);
         result?;
         database
     }

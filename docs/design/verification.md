@@ -125,3 +125,23 @@ M1 的正文计数为 0 是尚无资产操作的事实，未满足 A01 的上传
 ## 本轮多用户范围
 
 新增 U01–U06 见[规格](../../spac.md)与[多用户验证记录](multi-user.md)。使用临时用户、合成图片、真实 CLI/HTTP，检查跨账户的记录/资源/快照/回执/租约、撤销/重启、物理去重隔离、账户故障隔离和旧数据接管；客户端实际照片与 GTK 流程在相邻仓库验证。本轮不触碰线上用户或相册，不能冒称远端部署已升级。
+
+
+## 2026-10-16：日志落库与留存本地验证
+
+新增 9 个日志测试。`tests/logging.rs`（7 个）用真实 SQLite/gzip 验证 L01–L05 与 L07：落库等级只过滤库不过滤控制台、凭据字段永远脱敏且库内容字段需 payload 开启、超阈值记录压缩进 gzip 段并按 `first_ts_ms` 可读回、归档超过上限时先整段删除最旧段且 `archiveBytes` 始终不超上限、队列满时丢弃并计数且不阻塞调用线程（激活前的缓冲同样有界）、`logs` 命令读活库并拒绝畸形参数与缺失库。`tests/logging_process.rs`（2 个）启动真实二进制跑 L06：dev 档（`SYNC_LOG_LEVEL=debug` + `SYNC_LOG_PAYLOAD=on`）落库同步明细与记录操作预览，prod 档保持 info 且库内容折叠为 `[detail-off]`，两者都验证 `request_id`、错误类别、超阈值压缩与 SIGTERM 前记录已落盘。扩展 `tests/configuration.rs` 覆盖 L08 的等级/格式/阈值/队列边界与 `SYNC_LOG_PERSIST_LEVEL` 继承规则。
+
+本轮最终代码树的本地结果：
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --locked --all-targets -- -D warnings` | PASS |
+| `cargo build --locked --all-targets` | PASS |
+| `cargo test --locked --all-targets` | PASS，83 个测试，0 失败/忽略 |
+| `python tools/check-docs.py` | PASS |
+| `git diff --check` | PASS |
+
+这些是本地测试证据，不表示日志在真实主机上的 journald 保留、容器日志驱动轮转或公网部署磁盘水位已验证。本轮已按要求提交到本地 `main`，未推送，因此该提交的远端 CI 与独立 MSRV 运行均 NOT RUN。旧小节保留为先前阶段记录。
+
+另按开发档手动跑了一次真实进程（`SYNC_LOG_LEVEL=debug`、`SYNC_LOG_PAYLOAD=on`、本机临时数据目录、`SYNC_LOG_RETENTION_RAW_SECS=1` 以观察压缩）：登录、快照、租约 acquire/check/delete→modify→create/release、`changes/database`、`records/query`、`records/modify` 写入一条 Note、指标与 SIGTERM 停止。`syncserver logs --archive` 从压缩段读回上述记录，未压缩窗口行数归零；stdout 与日志库（含解压后的归档 payload）都检索不到该次运行使用的登录口令。此项是单实例手工验证，不构成公网部署或轮转策略证据。

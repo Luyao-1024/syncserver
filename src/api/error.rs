@@ -12,6 +12,11 @@ pub(crate) struct ApiError {
     pub reason: &'static str,
 }
 
+/// Server error code carried on the response so the request log can name the failure
+/// without re-parsing the body.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ResponseError(pub &'static str);
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorBody {
@@ -53,6 +58,7 @@ impl IntoResponse for ApiError {
             }),
         )
             .into_response();
+        response.extensions_mut().insert(ResponseError(self.code));
         if self.status == StatusCode::UNAUTHORIZED {
             response
                 .headers_mut()

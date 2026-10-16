@@ -9,6 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use serde_json::Value;
 use std::sync::Arc;
 pub(super) fn proof(headers: &HeaderMap) -> Result<LeaseProof, ApiError> {
     let one = |name: &str| -> Result<String, ApiError> {
@@ -42,12 +43,50 @@ pub(super) fn proof(headers: &HeaderMap) -> Result<LeaseProof, ApiError> {
     Ok(proof)
 }
 pub(super) async fn result(state: &AppState, request: Control) -> Response {
+    let operation = match &request {
+        Control::Acquire(_) => "acquire",
+        Control::Check(..) => "check",
+        Control::Phase(..) => "phase",
+        Control::Renew(_) => "renew",
+        Control::Release(_) => "release",
+        Control::Status(_) => "status",
+    };
     match state.store.control(request).await {
-        Ok(result) => (
-            StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            Json(result.body),
-        )
-            .into_response(),
+        Ok(result) => {
+            let error_code = result.body.get("serverErrorCode").and_then(Value::as_str);
+            match error_code {
+                // Losing exclusive uplink ownership is an operational event, not merely
+                // a rejected request: a whole client round stops here.
+                Some("UPLOAD_LEASE_LOST") | Some("UPLOAD_PHASE_MISMATCH") => {
+                    tracing::warn!(
+                        lease_operation = operation,
+                        error_code,
+                        "upload lease ownership ended for this round"
+                    )
+                }
+                Some(code) => tracing::debug!(
+                    lease_operation = operation,
+                    error_code = code,
+                    status = result.status,
+                    "upload lease control rejected"
+                ),
+                None if matches!(operation, "acquire" | "release") => tracing::info!(
+                    lease_operation = operation,
+                    status = result.status,
+                    "upload lease ownership changed"
+                ),
+                None => tracing::debug!(
+                    lease_operation = operation,
+                    status = result.status,
+                    "upload lease control completed"
+                ),
+            }
+            (
+                StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(result.body),
+            )
+                .into_response()
+        }
         Err(error) => ApiError::from(error).into_response(),
     }
 }

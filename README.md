@@ -50,6 +50,21 @@ cargo run --locked -- users create alice
 cargo run --locked
 ```
 
+开发阶段建议把日志降到 debug 并打开内容字段：元数据轮询的返回条数与 `moreComing`、变化页数、租约 renew/check/phase/status 会逐条打印，payload 开启后还带上记录操作预览，同步各阶段明细同时进入终端和 `local-run/data/logs.sqlite`。
+
+```bash
+export SYNC_LOG_LEVEL=debug SYNC_LOG_PAYLOAD=on
+```
+
+留存阈值默认「1 天内的日志原样保存、超过 1 天压缩」，压缩总量默认上限 1 GiB，可用 `SYNC_LOG_RETENTION_RAW_SECS` 与 `SYNC_LOG_ARCHIVE_MAX_BYTES` 调整；当天窗口不设条数或字节上限。生产环境保持 `SYNC_LOG_LEVEL=info` 与 `SYNC_LOG_PAYLOAD=off`，不要长期开启 payload。
+
+查询已落库的日志：`syncserver logs` 只读打开日志库，不取数据目录锁，可在服务运行时执行；`--level`/`--since`/`--until`/`--contains`/`--request-id`/`--limit` 过滤，`--archive` 一并读取压缩段，`--json` 逐行输出。沿用上面的环境变量即可（需要 `SYNC_DATA_DIR` 与 `SYNC_SIGNING_KEY_FILE` 存在，后者只用于配置校验，不读取内容）：
+
+```bash
+cargo run --locked -- logs --level debug --since 2h --contains lease
+cargo run --locked -- logs --limit 50 --json --archive
+```
+
 默认监听 127.0.0.1:8790。保持此终端运行，在另一个终端验证健康状态：
 
 ```bash
@@ -82,9 +97,12 @@ Ctrl+C 或 SIGTERM 停止接收新操作，排空数据库队列，登记正常�
 
 认证库位于 `.authentication/users.sqlite`；普通用户各自使用 `users/<uuid>/metadata.sqlite`、`objects` 和 `staging`，不会跨用户去重。登录会话有效 30 天，服务端仅存摘要；客户端不保存登录密码。数据目录及 objects/staging 必须由服务用户拥有、权限 0700；管理文件与密钥文件为 0600。拒绝符号链接和文件硬链接，不自动放宽文件权限。密钥不得进入 Git。
 
+日志落在同一私有数据目录的 `logs.sqlite`，与元数据库分离：不进同步事务、不改变 schema 或 database generation。凭据类字段（密码、token、签名能力、leaseToken、URL 等）任何配置下都脱敏；recordName、路径、标题、用户名等库内容只在 `SYNC_LOG_PAYLOAD=on` 且等级含 debug 时可见，单个文本值上限 512 字符。1 天内的日志原样保存且不设上限，超过阈值压缩为 gzip 段，压缩总量默认上限 1 GiB、超限时先删最旧段。详见[日志与留存契约](docs/contracts/logging.md)。
+
 默认 container 是 com.apple.photos.cloud，zone 是 PrimarySync。可用 SYNC_ZONES 配置逗号分隔的其他 zone；现有数据目录的 container/zone 集合固定，集合不一致拒绝启动。签名密钥意外更换同样拒绝启动。
 
 HTTP public base URL 只接受 literal loopback IP；非 loopback 绑定必须配置 HTTPS 地址。公网使用 TLS 反向代理；systemd/容器部署配置见 deploy，服务进程不内置 TLS。全部参数、默认值和边界见 [安全与配置](docs/design/security-operations.md)。
+日志等级、落库阈值与队列容量同样在启动时校验，非法值拒绝启动，不静默回落到默认值。
 
 ## 记录接口
 
@@ -94,7 +112,7 @@ HTTP public base URL 只接受 literal loopback IP；非 loopback 绑定必须�
 
 ## 验证
 
-测试覆盖真实 HTTP/SQLite/文件路径、快照和增量分页、token/范围、租约竞争/持锁追平/过期/保活、资源校验/去重/成对发布、条件与 Range、接收事务及实际 SIGKILL/SIGTERM。聚焦场景入口：
+测试覆盖真实 HTTP/SQLite/文件路径、快照和增量分页、token/范围、租约竞争/持锁追平/过期/保活、资源校验/去重/成对发布、条件与 Range、接收事务及实际 SIGKILL/SIGTERM，以及日志脱敏、阈值压缩、归档上限和有界队列。聚焦场景入口：
 
 ```bash
 cargo test --locked --test users_http --test configuration --test startup_http --test metrics_http
@@ -104,11 +122,18 @@ cargo test --locked --lib
 python tools/check-docs.py
 ```
 
+日志管线聚焦验证（脱敏、阈值压缩、归档上限、有界队列、真实进程 dev/prod 两档）：
+
+```bash
+cargo test --locked --test logging --test logging_process
+```
+
 远端推送前执行 fmt/clippy/build/test 完整闸门，见 [AGENTS.md](AGENTS.md)。容器、只读 smoke、远端 CI 和真实公网部署分别报告，不将其中一项替代其他证据。客户端 dirty 字段、回调、冲突副本、完整媒体入库与 UI 仍属于 C1。
 
 ## 设计文档
 
 - [用户认证契约](docs/contracts/authentication.md)、[多用户实现与管理](docs/design/multi-user.md)
+- [日志与留存契约](docs/contracts/logging.md)、[运维指标](docs/contracts/metrics.md)、[src/logging 实现规则](src/logging/AGENTS.md)
 - [spac.md：需求与验收](spac.md)、[架构](docs/design/architecture.md)、[实施计划](docs/design/implementation-plan.md)
 - [M1 基础](docs/design/m1-foundation.md)、[M2 实现](docs/design/m2-records.md)、[元数据记录](docs/contracts/records.md)
 - [兼容范围](docs/design/protocol-compatibility.md)、[共享快照](docs/contracts/snapshots.md)、[照片字段](docs/contracts/photo-records.md)、[资源接口](docs/contracts/assets.md)

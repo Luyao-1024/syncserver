@@ -34,6 +34,18 @@
 | httpAdmission.controlCapacity / controlActive | 租约控制 HTTP 配额/占用数；不包含监控请求 |
 | transfers.originalUploads / thumbnailUploads | 各角色当前持有上传配额的任务数 |
 | transfers.originalDownloads / thumbnailDownloads | 各角色当前持有下载配额的任务数；下载响应体结束/取消释放配额 |
+| logging.persistLevel / activated | 落库等级；activated 表示日志库已随数据目录锁打开，未激活时其余日志字段缺省 |
+| logging.queueDepth / queueCapacity | 待落库队列长度/容量，不含写入线程正在批处理或已提交的内容 |
+| logging.persisted | 已提交进日志库的记录数，含未压缩窗口与已压缩段，不区分二者 |
+| logging.droppedQueueFull | 队列满时丢弃的最新记录数，丢弃不阻塞请求线程 |
+| logging.droppedPending | 激活前内存缓冲溢出时丢弃的最旧记录数，例如启动读取凭证阶段的日志 |
+| logging.writeFailures | 日志库提交或归档失败次数，失败只影响日志本身 |
+| logging.rawRows / oldestRawTsMs | 未压缩窗口行数与最早时间戳，窗口为空时时间戳为 0；当天窗口不设上限，因此行数可持续增长 |
+| logging.archivedRows / archiveSegments / archiveBytes / archiveMaxBytes | 已压缩段行数/段数/字节数与生效上限 |
+| logging.trimmedSegments | 因超过归档上限而整段删除的最旧段数 |
+| logging.lastArchiveTsMs | 最近一次归档 pass 的时刻，包括未产生新段的检查 |
+
+`metrics.logging` 全部来自进程内增量计数器，读取监控不打开、不查询、也不锁 `logs.sqlite`，因此日志库损坏或归档进行中都不会阻塞此接口；日志留存阈值与压缩语义见[日志与留存契约](logging.md)。当 `SYNC_LOG_PERSIST_LEVEL=off` 时该对象只有 `enabled=false`、`persistLevel` 和 `activated=false`。
 
 `recovery` 与 capabilities 中同名对象一致，包含 runId、interruptedStarts、assetBytesRead、assetBytesHashed；它记录本次启动恢复的固定结果，恢复读取/哈希成本不混入运行期传输计数。队列关闭后深度为零，不能从深度推导历史处理成功。
 
@@ -42,3 +54,5 @@
 ## 验证入口
 
 `tests/metrics_http.rs` 验证真实 HTTP 认证、零数据库工作采样、普通/控制配额饱和、别名/分页/逐 zone 错误、进程重启计数以及真实部署 smoke；`tests/startup_http.rs` 验证执行器关闭后的诊断读取。`tests/assets_http.rs` 用真实双资源上传/下载和 100 次空变化/HEAD 验证成本计数。数据库单元测试阻塞实际执行线程，分别填满两个队列验证容量、深度、拒绝计数与关闭排空。
+
+`tests/logging.rs` 断言这些日志字段的底层计数：归档超限裁剪后 `archiveBytes`/`trimmedSegments`/`rawRows` 的实际取值，以及队列溢出时 `droppedQueueFull`/`droppedPending`/`persisted` 的有界行为；`tests/logging_process.rs` 用真实进程验证 dev/prod 两档的等级与 detail 差异。未激活或未启用落库时接口返回 `enabled=false`，`tests/metrics_http.rs` 验证采样不产生数据库工作。

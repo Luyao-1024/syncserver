@@ -15,6 +15,7 @@ pub(super) fn snapshot(state: &AppState) -> Value {
         "requests": state.requests.load(Ordering::Relaxed),
         "requestRejections": state.rejected.load(Ordering::Relaxed),
         "database": state.store.metrics(),
+        "logging": crate::logging::metrics_value(),
         "databaseChangePages": state.database_change_pages.load(Ordering::Relaxed),
         "zoneChangePages": state.zone_change_pages.load(Ordering::Relaxed),
         "assetBytesRead": state.asset_metrics.bytes_read.load(Ordering::Relaxed),

@@ -69,6 +69,22 @@ pub(super) async fn read(state: &AppState, operation: &str, value: Value) -> Res
                     _ => {}
                 }
             }
+            // Metadata polling is the highest-frequency path in the service, so reads
+            // stay at debug and only mutations or failures reach info and above.
+            tracing::debug!(
+                metadata_operation = operation,
+                status = result.status,
+                returned_records = result
+                    .body
+                    .get("records")
+                    .and_then(|records| records.as_array())
+                    .map_or(0, |records| records.len() as u64),
+                more_coming = result
+                    .body
+                    .get("moreComing")
+                    .and_then(|flag| flag.as_bool()),
+                "metadata read completed"
+            );
             (
                 StatusCode::from_u16(result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(result.body),
