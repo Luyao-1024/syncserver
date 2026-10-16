@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Read-only checks; never put an API key on the command line or log tokens."""
+"""Read-only checks; never put a password or API key on the command line or log tokens."""
 import argparse
+import getpass
 import ipaddress
 import json
 import pathlib
+import sys
 import urllib.parse
 import urllib.request
 
 parser = argparse.ArgumentParser()
 parser.add_argument("base_url")
-parser.add_argument("--api-key-file", type=pathlib.Path, required=True)
+auth = parser.add_mutually_exclusive_group(required=True)
+auth.add_argument("--api-key-file", type=pathlib.Path, help="legacy single-account deployments")
+auth.add_argument("--username", help="account deployment; password is prompted or read from stdin")
+parser.add_argument("--password-stdin", action="store_true", help="read the password from stdin instead of prompting")
 args = parser.parse_args()
 base = urllib.parse.urlsplit(args.base_url)
 try:
@@ -20,7 +25,20 @@ if base.username or base.password or base.query or base.fragment or base.path no
     raise SystemExit("Use a credential-free root base URL")
 if base.scheme != "https" and not (base.scheme == "http" and loopback):
     raise SystemExit("Use HTTPS outside literal loopback")
-key = args.api_key_file.read_text().strip()
+def login(username):
+    if args.password_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+    elif sys.stdin.isatty():
+        password = getpass.getpass(f"Password for {username}: ")
+    else:
+        raise SystemExit("Use --password-stdin when stdin is not a terminal")
+    body = json.dumps({"username": username, "password": password}).encode()
+    request = urllib.request.Request(args.base_url.rstrip("/") + "/v1/auth/login", data=body,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)["accessToken"]
+
+key = args.api_key_file.read_text().strip() if args.api_key_file else login(args.username)
 
 def call(path, body=None, authenticated=True):
     headers = {"Authorization": "Bearer " + key} if authenticated else {}

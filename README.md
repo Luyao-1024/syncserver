@@ -156,7 +156,7 @@ Agent 入口为 [AGENTS.md](AGENTS.md)，导航为 [Agent.md](Agent.md)。许可
 
 旧单账户/会话文件接入示例：`cargo run --locked --example receive_metadata -- http://127.0.0.1:8790 local-run/api.key local-run/receiver`。第二参数也可为只对用户可读的会话 Bearer 文件，`local-run/api.key` 仅适用于另行配置该文件且没有用户的旧模式。它持久接收元数据与双资源待办，不下载或发布 UI 照片；pending 完成前 applied 保持原位置。服务端真实 HTTP 测试验证其接收/重启/资源确认，但不替代 C1。
 
-首次部署参考 [deploy/README.md](deploy/README.md)，只读检查使用 `python3 tools/smoke.py http://127.0.0.1:8790 --api-key-file /path/to/private/session.token`（参数同样可读登录会话文件；示例路径不由启动命令生成）。GitHub CI 对 main push/PR 执行完整 Rust 闸门及独立最低版本检查。
+首次部署参考 [deploy/README.md](deploy/README.md)。只读检查按接入方式二选一：已有用户的账户部署使用 `python3 tools/smoke.py http://127.0.0.1:8790 --username alice --password-stdin`（口令从标准输入或终端隐藏读取，不进命令行参数），没有用户的旧单账户部署继续使用 `--api-key-file /path/to/api.key`。两者互斥，都不把凭证写入日志。GitHub CI 对 main push/PR 执行完整 Rust 闸门及独立最低版本检查。
 
 
 运维监控使用受 Bearer 认证的 `GET /v1/metrics`，见[指标契约](docs/contracts/metrics.md)。它不向数据库排队，独立配额在普通/控制请求饱和时仍可采样；包含两个队列、传输角色占用、变化分页与正文成本。计数按本次 runId 重置，不代表客户端已同步完成。部署 smoke 同时验证此入口。
