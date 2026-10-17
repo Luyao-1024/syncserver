@@ -145,3 +145,22 @@ M1 的正文计数为 0 是尚无资产操作的事实，未满足 A01 的上传
 这些是本地测试证据，不表示日志在真实主机上的 journald 保留、容器日志驱动轮转或公网部署磁盘水位已验证。本轮已按要求提交到本地 `main`，未推送，因此该提交的远端 CI 与独立 MSRV 运行均 NOT RUN。旧小节保留为先前阶段记录。
 
 另按开发档手动跑了一次真实进程（`SYNC_LOG_LEVEL=debug`、`SYNC_LOG_PAYLOAD=on`、本机临时数据目录、`SYNC_LOG_RETENTION_RAW_SECS=1` 以观察压缩）：登录、快照、租约 acquire/check/delete→modify→create/release、`changes/database`、`records/query`、`records/modify` 写入一条 Note、指标与 SIGTERM 停止。`syncserver logs --archive` 从压缩段读回上述记录，未压缩窗口行数归零；stdout 与日志库（含解压后的归档 payload）都检索不到该次运行使用的登录口令。此项是单实例手工验证，不构成公网部署或轮转策略证据。
+
+
+## 2026-10-17：每用户逻辑存储配额本地验证
+
+[配额契约](../contracts/storage-quota.md)对应 Q01–Q05。`tests/storage_http.rs` 共 8 个真实 HTTP 场景，覆盖 20 GB 十进制默认值、认证/范围/no-store、能力声明、并发与批量原子预留、幂等重试、失败/重启释放预留、两个独立文件引用相同对象分别计量、原图/缩略图计量、照片删除释放逻辑配额且仍可下载保留对象、历史/未引用对象不计量、降低上限保留下载，以及查询不推进 token/不读或重新 hash 正文。
+
+新增直接复用资源的 atomic 配额失败回滚、并发文件创建不能超售、nonatomic 逐项失败且其他子项可提交、同一文件幂等重放不重复计量、满额同大小替换、增长被拒、缩小释放空间、降低上限后仍可改元数据和删除。实际对象目录验证同一内容仍只有一个物理对象。配置测试和受控时间过期测试一并在完整套件执行。最终计量按当前未删除记录的每个资源引用累加，不按去重资产表或历史物理占用计算。
+
+Tests:
+
+- PASS `cargo test --locked --test storage_http --test records_http --test assets_http`（23 个聚焦与受影响测试）。
+- PASS `cargo fmt --all --check`。
+- PASS `cargo clippy --locked --all-targets -- -D warnings`。
+- PASS `cargo build --locked --all-targets`。
+- PASS `cargo test --locked --all-targets`（完整本地测试，含配置、受控时间及用户隔离）。
+- PASS `python3 tools/check-docs.py`（链接、JSON 示例与合成 fixture）。
+- PASS `git diff --check`。
+
+HTTP/进程测试在获准监听 loopback 端口的环境运行。当前证据仅覆盖本地源码与测试；本地提交状态以 Git 记录为准，推送、远端 CI、线上配置和部署均未执行。

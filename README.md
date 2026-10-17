@@ -93,6 +93,18 @@ PYAUTH
 
 Ctrl+C 或 SIGTERM 停止接收新操作，排空数据库队列，登记正常停止并释放目录锁。再次使用同一目录和签名密钥启动会保留 databaseGeneration。另一个进程同时使用该目录会得到 DATA_DIR_LOCKED。
 
+## 云端空间配额
+
+每个用户默认拥有 **20 GB（20000000000 字节）** 的资源总配额，原图和缩略图都计入。部署时设置 `SYNC_USER_STORAGE_QUOTA_BYTES=20000000000`，修改后重启服务；所有用户分别享有该上限。单文件原图默认仍为 512 MiB、缩略图为 2 MiB。
+
+使用当前账户登录得到的 Bearer 查询 `GET /v1/storage`（无参数、无须上行租约）：
+
+```json
+{"quotaBytes":20000000000,"usedBytes":1000,"reservedBytes":2000,"availableBytes":19999997000}
+```
+
+用户占用按当前未删除文件的逻辑资源大小计算：不同文件即使引用同一个去重对象，也分别计量；同一文件重复同步不重复计量。原图和缩略图均计入，历史版本及未引用对象不占用户配额。新上传预留逻辑增长，创建/复制/更新记录在事务内最终校验配额，超额返回 HTTP 409 `STORAGE_QUOTA_EXCEEDED`。删除文件立即释放逻辑空间，底层内容对象继续按现有历史保留规则管理。详见[计量与查询契约](docs/contracts/storage-quota.md)。
+
 ## 配置与安全
 
 认证库位于 `.authentication/users.sqlite`；普通用户各自使用 `users/<uuid>/metadata.sqlite`、`objects` 和 `staging`，不会跨用户去重。登录会话有效 30 天，服务端仅存摘要；客户端不保存登录密码。数据目录及 objects/staging 必须由服务用户拥有、权限 0700；管理文件与密钥文件为 0600。拒绝符号链接和文件硬链接，不自动放宽文件权限。密钥不得进入 Git。

@@ -11,6 +11,7 @@ use url::{Host, Url};
 #[serde(rename_all = "camelCase")]
 pub struct Limits {
     pub max_asset_bytes: u64,
+    pub user_storage_quota_bytes: u64,
     pub thumbnail_max_bytes: u64,
     pub upload_concurrency: usize,
     pub download_concurrency: usize,
@@ -45,6 +46,7 @@ const KEYS: &[&str] = &[
     "SYNC_CONTAINER",
     "SYNC_ZONES",
     "SYNC_MAX_ASSET_BYTES",
+    "SYNC_USER_STORAGE_QUOTA_BYTES",
     "SYNC_THUMBNAIL_MAX_BYTES",
     "SYNC_UPLOAD_CONCURRENCY",
     "SYNC_DOWNLOAD_CONCURRENCY",
@@ -160,6 +162,7 @@ impl Config {
         };
         let limits = Limits {
             max_asset_bytes: number("SYNC_MAX_ASSET_BYTES", 536870912)?,
+            user_storage_quota_bytes: number("SYNC_USER_STORAGE_QUOTA_BYTES", 20_000_000_000)?,
             thumbnail_max_bytes: number("SYNC_THUMBNAIL_MAX_BYTES", 2097152)?,
             upload_concurrency: sized("SYNC_UPLOAD_CONCURRENCY", 2)?,
             download_concurrency: sized("SYNC_DOWNLOAD_CONCURRENCY", 8)?,
@@ -185,10 +188,11 @@ impl Config {
         }
         if limits.thumbnail_max_bytes > 2097152
             || limits.max_asset_bytes > i64::MAX as u64
+            || limits.user_storage_quota_bytes > i64::MAX as u64
             || limits.upload_total_timeout_secs < limits.upload_idle_timeout_secs
         {
             return Err(Error::Config(
-                "thumbnail limit exceeds 2 MiB, asset size overflows SQLite, or total timeout is below idle timeout",
+                "thumbnail limit exceeds 2 MiB, asset size or storage quota overflows SQLite, or total timeout is below idle timeout",
             ));
         }
         let level = LogLevel::parse(&value("SYNC_LOG_LEVEL", "info"))?;

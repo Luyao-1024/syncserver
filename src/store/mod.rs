@@ -3,6 +3,7 @@ pub(crate) mod files;
 mod leases;
 mod migrations;
 mod records;
+mod storage;
 mod sync;
 pub(crate) use leases::lost as lease_lost;
 pub use records::Outcome;

@@ -94,6 +94,7 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/metrics", get(metrics::read))
         .route("/v1/snapshots", post(snapshot))
+        .route("/v1/storage", get(assets::storage))
         .route("/v1/uploads/{id}", get(assets::session))
         .route("/v1/uploads/{id}/renew", post(assets::renew))
         .route("/v1/uploads/{id}/content", post(assets::upload))
@@ -313,7 +314,7 @@ async fn capabilities(Extension(state): Extension<Arc<AppState>>) -> Json<Value>
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,
         "capabilities": {
-            "zoneListing": true, "recordCrud": true, "snapshots": true,
+            "storageQuota": true, "zoneListing": true, "recordCrud": true, "snapshots": true,
             "incrementalChanges": true, "uploadLeases": true, "fencing": true, "uploadPhases": true, "operationStatusRead": true, "tokenCurrentGate": true, "queryBatch": true, "changeAliases": true, "assetUpload": true, "assetDownload": true,
             "operationalMetrics": true, "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": true
         },

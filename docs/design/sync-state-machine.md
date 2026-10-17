@@ -81,3 +81,8 @@ ingestToken 只代表页/待办已持久接收；appliedToken 表示固定 H 的
 ## M5 运维采样（2026-10-15）
 
 [监控](../contracts/metrics.md)与同步/租约状态机独立：只读采样不获取上行锁、不推进 token、不改变 phase，也不提交数据库命令。普通/控制准入饱和不占用独立监控配额；执行器关闭后监控可返回 ready=false，不能据此接受新的同步写入。变化页计数是生成响应的成本，不是客户端接收或 applied 进度。
+
+
+## 上传空间门槛
+
+通过租约、最新进度和阶段检查后，上传申请还须满足[逻辑配额](../contracts/storage-quota.md)约束。Reserved/Receiving/PublishPrepared 持有逻辑增长预留，Published 结束传输预留但不增加逻辑占用；文件记录提交时按当前引用增加已用。直接复用对象创建副本也增加占用并执行最终事务门槛；超额失败不得清 dirty。Failed/Expired/失锁释放预留，删除文件释放逻辑空间；历史物理对象保留与用户配额分开。

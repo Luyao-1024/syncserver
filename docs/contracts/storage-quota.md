@@ -1,0 +1,40 @@
+# 每用户云端存储配额
+
+状态：按逻辑大小计量的本地实现及测试已通过，证据见[验证记录](../design/verification.md)；线上部署另行验证。
+
+本服务扩展；配额按认证账户的 Store 统计，覆盖该账户全部 zone。旧 API key 模式对应原单账户 Store。请求不能指定用户或 namespace。
+
+## 配置与计量
+
+`SYNC_USER_STORAGE_QUOTA_BYTES` 为每用户的总资源配额，默认 `20000000000` 字节（20 GB，十进制），须为 1 到 SQLite 有符号 64 位上限之间的整数，重启服务生效。所有用户独立享有相同配置上限；不是所有用户合计共享 20 GB。单文件原图及缩略图限制继续分别遵守 `SYNC_MAX_ASSET_BYTES` 与 `SYNC_THUMBNAIL_MAX_BYTES`。
+
+- `usedBytes`：当前未删除文件记录所引用资源的逻辑大小之和。每个 ASSETID 字段引用按服务端资产大小计一次；不同记录/字段引用同一对象分别计量。原图和缩略图继续计入，同一文件幂等重试/重命名不重复计量，历史版本、未引用对象和已删除文件不计入。
+- `reservedBytes`：有效租约代次下未完成、未过期的 Reserved/Receiving/PublishPrepared 上传的逻辑增长预留。新建按 expectedSize，更新按 `max(expectedSize - 当前同 zone/recordName/fieldName 的资源大小, 0)`；大小来自服务端资产元数据，不相信客户端摘要减免。
+- `availableBytes = max(quotaBytes - usedBytes - reservedBytes, 0)`。
+- 数据库、日志、历史对象、暂存及隔离恢复对象不属于用户逻辑占用。物理对象仍按内容去重并保留，逻辑配额与磁盘占用分开。
+
+删除文件立即释放其逻辑配额，不自动删除仍被其他文件/历史引用的对象。降低上限不删除既有文件、不阻止读取/下载/删除/重命名、同大小替换或缩小；超额时禁止逻辑占用继续增长。相同内容的两份独立文件分别计量，跨设备同步同一记录只计一次。
+
+## 上传准入与事务
+
+创建上传会话时，在同一 SQLite 事务中检查 `usedBytes + reservedBytes + 本批逻辑增长预留 <= quotaBytes` 并写入全部会话。超额返回 HTTP 409 `STORAGE_QUOTA_EXCEEDED`，整批不创建会话、不保存成功幂等结果。幂等重试返回已有会话，不重复占用；失败、过期或失锁释放有效预留。允许不增加逻辑大小的更新，即使既有占用超过降低后的上限。实际接收字节仍必须精确等于 expectedSize，并由服务端验证 SHA-256。
+
+对象发布只产生可被引用的内容资源，不直接增加用户 usedBytes；会话 Published 后结束传输预留。随后创建/复制/更新文件记录时，在记录/版本/变化/receipt 的同一事务中核对最终逻辑占用；占用增长必须满足 `最终 usedBytes + reservedBytes <= quotaBytes`。直接复用已发布资源也执行相同检查。超额 atomic 整批回滚，nonatomic 只回滚失败子项并返回逐项错误。删除/净缩小/等大小变更不因已超额被拒绝；成功结果的幂等重放不再次记账。
+
+发布与文件记录之间允许暂时存在未引用对象；它不计入 usedBytes，也不保证后续创建文件一定成功，最终以记录提交事务为准。计算只读取元数据，不扫描目录、不读取或重新 hash 资产正文；空间查询不推进同步 generation/commit seq。
+
+## 查询
+
+`GET /v1/storage`，Bearer 认证，无参数，无须上行租约。拒绝任何 query 参数；只返回当前账户的配额。响应 `Cache-Control: no-store`，所有字节字段为非负整数：
+
+```json
+{"quotaBytes":20000000000,"usedBytes":1000,"reservedBytes":2000,"availableBytes":19999997000}
+```
+
+查询在同一个数据库读事务中计算，沿用有界普通数据库队列。`GET /v1/capabilities` 增加 `capabilities.storageQuota=true`，`limits.userStorageQuotaBytes` 返回当前上限。使用量不放入零 SQL 的运维指标采样。
+
+## 验收
+
+默认与配置边界；精确达到上限及超额；批量/并发申请无超售；幂等不重复计量；失败/过期/失锁和重启释放预留；相同内容的独立文件重复计量；复用资源不能绕过记录事务配额；删除释放逻辑空间；同大小更新/缩小与降低上限保留下载；不同用户相同内容独立计量；无认证及指定其他用户被拒绝；查询不改变同步 token、不读取正文。
+
+关联：[资源协议](assets.md)、[认证](authentication.md)、[兼容矩阵](../design/protocol-compatibility.md)、[恢复](../design/concurrency-recovery.md)。

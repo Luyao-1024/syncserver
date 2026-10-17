@@ -27,6 +27,7 @@
 | SYNC_SIGNING_KEY_FILE | 跨重启稳定的签名密钥文件 |
 | SYNC_CONTAINER | 默认 com.apple.photos.cloud；已有数据目录不得静默更改 |
 | SYNC_ZONES | 部署初始化的 zone 清单，默认 PrimarySync |
+| SYNC_USER_STORAGE_QUOTA_BYTES | 每用户当前文件逻辑资源总配额，默认 20000000000（20 GB），正整数且不超过 SQLite 有符号 64 位；重启生效，计量见[配额契约](../contracts/storage-quota.md) |
 | SYNC_MAX_ASSET_BYTES | 默认 536870912（512 MiB），可正数配置 |
 | SYNC_THUMBNAIL_MAX_BYTES | 默认 2097152，v0.1 不可超过 2 MiB |
 | SYNC_UPLOAD_CONCURRENCY | 默认 2，必须正整数 |

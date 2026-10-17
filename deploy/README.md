@@ -56,3 +56,8 @@ sudo -u syncserver sh -c 'set -a; . /etc/syncserver/server.env; set +a; syncserv
 [可运行配置模板](nginx.conf.example)转发到 loopback 8790，部署时替换 server_name 和证书路径。默认接收上限 512 MiB 与服务端默认一致；改变应用资源上限时一并调整。上传和下载关闭代理缓冲，HTTP/1.1 保留分块流，变更请求不自动重试；capability URL 带秘密查询参数，访问日志关闭。安装后先 `nginx -t`，再 reload。
 
 证书续期继续使用原 HTTP ACME webroot；部署钩子校验并 reload Nginx。替换旧服务时检查所有活动续期钩子，避免钩子重启已退役服务。凭证文件只放权限受限目录，不写入仓库或部署报告。
+
+
+## 用户空间上限
+
+环境模板显式设置 `SYNC_USER_STORAGE_QUOTA_BYTES=20000000000`（每用户 20 GB，十进制）；缺省也使用此值，修改后重启服务。用户用现有登录 Bearer 请求 `GET /v1/storage` 查询总额/已用/预留/可用空间。该配置限制每用户全部 zone 的资源总额，不替代单文件或 Nginx 请求正文上限，也不限制 SQLite、日志和暂存的磁盘开销。按当前文件的逻辑大小计量，相同内容的多个独立文件分别计费；删除释放逻辑配额，历史及未引用对象不计入用户已用空间，见[完整契约](../docs/contracts/storage-quota.md)。本地模板变更不代表线上已经部署。

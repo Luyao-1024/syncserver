@@ -247,7 +247,7 @@ pub(crate) fn modify(
     }
     if request.atomic {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let records = match apply(&tx, &request.operations, true)? {
+        let records = match apply(&tx, &request.operations, true, guard)? {
             Ok(records) => records,
             Err(error) => return Ok(Outcome::failure(error)),
         };
@@ -290,7 +290,7 @@ pub(crate) fn modify(
             tx.execute_batch("ROLLBACK TO record_child")?;
             error.item(&op.record_name.0, &op.zone)
         } else {
-            match apply(&tx, std::slice::from_ref(op), false)? {
+            match apply(&tx, std::slice::from_ref(op), false, guard)? {
                 Ok(records) => records[0].wire(),
                 Err(error) => {
                     tx.execute_batch("ROLLBACK TO record_child")?;
@@ -321,7 +321,9 @@ fn apply(
     tx: &Transaction<'_>,
     operations: &[ResolvedOperation],
     atomic: bool,
+    guard: &super::leases::Guard<'_>,
 ) -> Result<DomainResult<Vec<Record>>> {
+    let used_before = super::storage::usage(tx, guard)?.used_bytes;
     let zone = &operations[0].zone;
     if !zone_exists(tx, zone)? {
         return Ok(Err(Failure::unknown()));
@@ -468,6 +470,9 @@ fn apply(
                 binding.thumbnail_asset_id.to_string()
             ],
         )?;
+    }
+    if let Err(error) = super::storage::check_record_growth(tx, guard, used_before)? {
+        return Ok(Err(error));
     }
     Ok(Ok(changed))
 }

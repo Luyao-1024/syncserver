@@ -1,5 +1,8 @@
 //! Asset/session metadata. This module never reads or hashes object bodies.
-use super::leases::{Guard, lost, mismatch};
+use super::{
+    leases::{Guard, lost, mismatch},
+    storage,
+};
 use crate::{
     Error, Result,
     domain::{
@@ -232,6 +235,19 @@ fn reserve(
         }
         serde_json::from_str(&ids).map_err(|_| Error::RecoveryFailed)?
     } else {
+        let mut additional = 0u64;
+        for token in &request.tokens {
+            additional = additional
+                .checked_add(storage::reservation_bytes(&tx, &request.zone, token)?)
+                .ok_or_else(|| {
+                    Failure::new(
+                        409,
+                        "STORAGE_QUOTA_EXCEEDED",
+                        "Account storage quota exceeded",
+                    )
+                })?;
+        }
+        storage::ensure_capacity(&tx, guard, additional)?;
         let mut ids = Vec::new();
         let expires = crate::jobs::now_ms()? + SESSION_TTL_MS;
         for token in &request.tokens {
@@ -274,6 +290,13 @@ pub(crate) fn execute(
     guard: &Guard<'_>,
 ) -> Result<AssetReply> {
     let value = match command {
+        AssetCommand::Storage => {
+            let tx = db.transaction()?;
+            let value = serde_json::to_value(storage::usage(&tx, guard)?)
+                .map_err(|_| Error::RecoveryFailed)?;
+            tx.commit()?;
+            value
+        }
         AssetCommand::Reserve(request, proof, key) => reserve(db, request, proof, key, guard)?,
         AssetCommand::Status(id) => {
             let s = session(db, id)?;
@@ -351,6 +374,9 @@ pub(crate) fn execute(
                 return Err(
                     Failure::new(409, "UPLOAD_STATE_CONFLICT", "Receiving owner mismatch").into(),
                 );
+            }
+            if verified.asset.size != s.expected_size {
+                return Err(Failure::bad().into());
             }
             tx.execute(
                 "INSERT INTO publish_intents VALUES(1,?1,?2,?3,'Prepared')",

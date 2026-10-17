@@ -34,6 +34,10 @@ fn configuration_rejects_unsafe_urls_ranges_names_and_missing_keys() {
         ("SYNC_ZONES", "../bad"),
         ("SYNC_ZONES", ""),
         ("SYNC_ZONES", " A"),
+        ("SYNC_USER_STORAGE_QUOTA_BYTES", "0"),
+        ("SYNC_USER_STORAGE_QUOTA_BYTES", "-1"),
+        ("SYNC_USER_STORAGE_QUOTA_BYTES", "20GB"),
+        ("SYNC_USER_STORAGE_QUOTA_BYTES", "9223372036854775808"),
         ("SYNC_MAX_ASSET_BYTES", "0"),
         ("SYNC_MAX_ASSET_BYTES", "9223372036854775808"),
         ("SYNC_THUMBNAIL_MAX_BYTES", "2097153"),
@@ -229,5 +233,27 @@ fn logging_configuration_defaults_bounds_and_detail_switch() {
         input.push((key, invalid.into()));
         let error = Config::from_pairs(input).unwrap_err();
         assert!(matches!(error, Error::Config(_)), "{key}");
+    }
+}
+
+#[test]
+fn user_storage_quota_defaults_to_20_decimal_gb_and_accepts_sqlite_boundaries() {
+    assert_eq!(
+        Config::from_pairs(pairs())
+            .unwrap()
+            .limits()
+            .user_storage_quota_bytes,
+        20_000_000_000
+    );
+    for bytes in ["1", "9223372036854775807"] {
+        let mut input = pairs();
+        input.push(("SYNC_USER_STORAGE_QUOTA_BYTES", bytes.into()));
+        assert_eq!(
+            Config::from_pairs(input)
+                .unwrap()
+                .limits()
+                .user_storage_quota_bytes,
+            bytes.parse::<u64>().unwrap()
+        );
     }
 }

@@ -140,6 +140,7 @@ pub(crate) struct Verified {
     pub asset: Asset,
 }
 pub(crate) enum AssetCommand {
+    Storage,
     Reserve(Reserve, LeaseProof, Option<String>),
     Status(Uuid),
     Renew(Uuid, LeaseProof),

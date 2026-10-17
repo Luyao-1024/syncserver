@@ -107,3 +107,8 @@ C1 的 dirty 是本地既有同步记录上的字段，另有本地变更版本�
 ## 多用户扩展的数据归属
 
 各用户的上述照片 schema 独立存放；不把多个账户用一个可任意传入 tenant 的请求混在同一接口上下文。普通用户 tenant 为不可变用户 UUID；唯一显式接管者保留旧 namespace 与代际。认证库另有 schema 1：users 保存 UUID、唯一用户名、Argon2id PHC、授权版本、enabled 和 legacy 所有权；sessions 保存随机秘密的 SHA-256、用户 UUID、授权版本、绝对过期时间。不保存明文密码或会话。详见[认证契约](../contracts/authentication.md)。
+
+
+## 用户资源空间计量
+
+[空间配额](../contracts/storage-quota.md)复用 schema v5 的当前 `records.fields_json/deleted`、可信 `assets.size`、`upload_sessions` 与 `upload_lease`，不新增持久计数器或修改 generation。每用户全部 zone 共享上限；当前未删除记录的每个 ASSETID 字段按资产大小分别计量，不同文件引用相同 AssetId 也累加，历史/墓碑/未引用对象不计入。有效未完成上传仅预留相对当前字段的正增长。对象发布不直接增加已用；记录事务以最终逻辑占用检查增长，超额回滚投影、版本、变化及成功 receipt。删除立即释放逻辑配额，物理对象仍保留。

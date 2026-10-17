@@ -25,6 +25,21 @@ use tokio::{
 };
 use uuid::Uuid;
 
+pub(super) async fn storage(
+    axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
+    request: Request,
+) -> Response {
+    let mut response = if request.uri().query().is_some() {
+        ApiError::bad_request().into_response()
+    } else {
+        json_reply(&state, AssetCommand::Storage).await
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+}
+
 pub(super) fn parameters(request: &Request) -> Result<BTreeMap<String, String>, ApiError> {
     let mut params = BTreeMap::new();
     for (key, value) in
