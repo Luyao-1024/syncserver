@@ -1,8 +1,9 @@
 //! Account-local resource accounting; never touches object bodies or sync counters.
 use super::leases::Guard;
 use crate::{Error, Result, domain::records::Failure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,34 +87,126 @@ pub(crate) fn media_kind(mime: &str, path: Option<&str>) -> MediaKind {
     }
 }
 
+struct AssetUsage {
+    size: u64,
+    mime_type: String,
+}
+
+struct RecordUsage {
+    path: Option<String>,
+    original_asset_id: Option<String>,
+    asset_ids: Vec<String>,
+}
+
+fn asset_reference(value: &serde_json::Value) -> Option<&str> {
+    if value.get("type")?.as_str()? != "ASSETID" {
+        return None;
+    }
+    value.pointer("/value/assetId")?.as_str()
+}
+
+fn record_relative_path(fields: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    let value = fields.get("relativePath")?;
+    if value.get("type")?.as_str()? != "STRING" {
+        return None;
+    }
+    value.get("value")?.as_str().map(str::to_owned)
+}
+
+fn load_assets(
+    db: &Connection,
+    asset_ids: &HashSet<String>,
+) -> Result<HashMap<String, AssetUsage>> {
+    let mut ordered: Vec<&String> = asset_ids.iter().collect();
+    ordered.sort_unstable();
+    let mut assets = HashMap::with_capacity(ordered.len());
+    for chunk in ordered.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT asset_id,size,mime_type
+               FROM assets
+              WHERE namespace_id=1 AND asset_id IN ({placeholders})"
+        );
+        let mut statement = db.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(chunk.iter().copied()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (asset_id, size, mime_type) = row?;
+            let size = u64::try_from(size).map_err(|_| Error::RecoveryFailed)?;
+            assets.insert(asset_id, AssetUsage { size, mime_type });
+        }
+    }
+    Ok(assets)
+}
+
 fn logical_usage(db: &Connection) -> Result<MediaUsage> {
     let mut statement = db.prepare(
-        "SELECT a.size, COALESCE(original.mime_type,a.mime_type),
-             COALESCE(b.relative_path,CASE WHEN json_extract(r.fields_json,'$.relativePath.type')='STRING'
-                 THEN json_extract(r.fields_json,'$.relativePath.value') END)
-         FROM records r
-         JOIN json_each(r.fields_json) f
-         JOIN assets a ON a.namespace_id=r.namespace_id
-             AND a.asset_id=json_extract(f.value,'$.value.assetId')
-         LEFT JOIN assets original ON original.namespace_id=r.namespace_id
-             AND json_extract(r.fields_json,'$.resOriginalRes.type')='ASSETID'
-             AND original.asset_id=json_extract(r.fields_json,'$.resOriginalRes.value.assetId')
-         LEFT JOIN photo_bindings b ON b.namespace_id=r.namespace_id AND b.zone_name=r.zone_name
-             AND b.master_record_name=r.record_name
-         WHERE r.namespace_id=1 AND r.deleted=0 AND json_extract(f.value,'$.type')='ASSETID'"
+        "SELECT r.fields_json,b.relative_path
+           FROM records r
+           LEFT JOIN photo_bindings b ON b.namespace_id=r.namespace_id AND b.zone_name=r.zone_name
+               AND b.master_record_name=r.record_name
+          WHERE r.namespace_id=1 AND r.deleted=0",
     )?;
-    let mut rows = statement.query([])?;
-    let mut usage = MediaUsage::default();
-    while let Some(row) = rows.next()? {
-        let size = u64::try_from(row.get::<_, i64>(0)?).map_err(|_| Error::RecoveryFailed)?;
-        let mime: String = row.get(1)?;
-        let path: Option<String> = row.get(2)?;
-        let bytes = match media_kind(&mime, path.as_deref()) {
-            MediaKind::Image => &mut usage.image_bytes,
-            MediaKind::Video => &mut usage.video_bytes,
-            MediaKind::Other => &mut usage.other_bytes,
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut records = Vec::with_capacity(rows.len());
+    let mut asset_ids = HashSet::new();
+    for (fields_json, binding_path) in rows {
+        let fields: serde_json::Value =
+            serde_json::from_str(&fields_json).map_err(|_| Error::RecoveryFailed)?;
+        let Some(fields) = fields.as_object() else {
+            continue;
         };
-        *bytes = bytes.checked_add(size).ok_or(Error::RecoveryFailed)?;
+        let original_asset_id = fields
+            .get("resOriginalRes")
+            .and_then(asset_reference)
+            .map(str::to_owned);
+        if let Some(asset_id) = &original_asset_id {
+            asset_ids.insert(asset_id.clone());
+        }
+        let mut record = RecordUsage {
+            path: binding_path.or_else(|| record_relative_path(fields)),
+            original_asset_id,
+            asset_ids: Vec::new(),
+        };
+        for value in fields.values() {
+            if let Some(asset_id) = asset_reference(value) {
+                asset_ids.insert(asset_id.to_owned());
+                record.asset_ids.push(asset_id.to_owned());
+            }
+        }
+        records.push(record);
+    }
+
+    let assets = load_assets(db, &asset_ids)?;
+    let mut usage = MediaUsage::default();
+    for record in records {
+        let original_mime = record
+            .original_asset_id
+            .as_ref()
+            .and_then(|asset_id| assets.get(asset_id))
+            .map(|asset| asset.mime_type.clone());
+        for asset_id in record.asset_ids {
+            let Some(asset) = assets.get(&asset_id) else {
+                continue;
+            };
+            let mime = original_mime.as_deref().unwrap_or(&asset.mime_type);
+            let bytes = match media_kind(mime, record.path.as_deref()) {
+                MediaKind::Image => &mut usage.image_bytes,
+                MediaKind::Video => &mut usage.video_bytes,
+                MediaKind::Other => &mut usage.other_bytes,
+            };
+            *bytes = bytes.checked_add(asset.size).ok_or(Error::RecoveryFailed)?;
+        }
     }
     Ok(usage)
 }
@@ -389,6 +482,50 @@ mod tests {
         ] {
             assert_eq!(media_kind(mime, path), expected);
         }
+    }
+
+    #[test]
+    fn logical_usage_counts_every_current_assetid_field_and_duplicate_references() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config::from_pairs([
+            ("SYNC_DATA_DIR", "/unused/data"),
+            ("SYNC_SIGNING_KEY_FILE", "/unused/signing"),
+        ])
+        .unwrap();
+        let mut db = Connection::open(root.path().join("metadata.sqlite")).unwrap();
+        migrations::initialize(&mut db, &config, &[1; 32]).unwrap();
+        db.pragma_update(None, "foreign_keys", "off").unwrap();
+
+        db.execute(
+            "INSERT INTO assets(namespace_id,asset_id,sha256,size,mime_type,thumbnail_validated)
+             VALUES(1,'asset-a',?1,4,'application/octet-stream',0)",
+            ["a".repeat(64)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO assets(namespace_id,asset_id,sha256,size,mime_type,thumbnail_validated)
+             VALUES(1,'asset-b',?1,6,'image/png',0)",
+            ["b".repeat(64)],
+        )
+        .unwrap();
+        let fields = json!({
+            "resOriginalRes": {"type":"ASSETID","value":{"assetId":"asset-a"}},
+            "customAttachment": {"type":"ASSETID","value":{"assetId":"asset-b"}},
+            "duplicateAttachment": {"type":"ASSETID","value":{"assetId":"asset-a"}},
+            "missingAttachment": {"type":"ASSETID","value":{"assetId":"missing"}},
+            "relativePath": {"type":"STRING","value":"clips/movie.MOV"}
+        });
+        db.execute(
+            "INSERT INTO records(namespace_id,zone_name,record_name,record_type,revision,seq,fields_json,deleted)
+             VALUES(1,'PrimarySync','general-record','CPLMaster','revision',1,?1,0)",
+            params![fields.to_string()],
+        )
+        .unwrap();
+
+        let usage = logical_usage(&db).unwrap();
+        assert_eq!(usage.video_bytes, 14);
+        assert_eq!(usage.image_bytes, 0);
+        assert_eq!(usage.other_bytes, 0);
     }
 
     #[test]
