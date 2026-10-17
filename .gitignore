@@ -9,3 +9,4 @@
 *.pem
 *.log
 /local-run/
+__pycache__/

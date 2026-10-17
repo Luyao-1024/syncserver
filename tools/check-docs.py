@@ -132,7 +132,8 @@ def main():
     args = parser.parse_args()
     links = examples = 0
     docs = sorted(path for path in ROOT.rglob('*.md')
-                  if not set(path.relative_to(ROOT).parts) & {'target', '.git', 'local-run'})
+                  if not set(path.relative_to(ROOT).parts)
+                  & {'target', '.git', 'local-run', 'node_modules', 'dist'})
     for path in docs:
         text = path.read_text(encoding='utf-8')
         for target in re.findall(r'\[[^\]]*\]\(([^\n)]+)\)', text):

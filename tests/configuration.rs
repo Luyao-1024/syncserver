@@ -259,3 +259,58 @@ fn user_storage_quota_defaults_to_20_decimal_gb_and_accepts_sqlite_boundaries() 
     }
 }
 
+#[tokio::test]
+async fn the_console_is_served_from_the_binary_and_carries_no_account_data() {
+    let app = Running::new().await;
+
+    // The shell is reachable without a session, because it holds nothing but code.
+    let response = app
+        .client
+        .get(format!("{}/console/", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap();
+    assert!(policy.contains("default-src 'self'"), "{policy}");
+    // Images are rendered from object URLs, so the policy must permit them explicitly.
+    assert!(policy.contains("img-src 'self' blob:"), "{policy}");
+    let html = response.text().await.unwrap();
+    assert!(html.contains("<div id=\"root\">"), "{html}");
+    assert!(
+        !html.contains("Bearer"),
+        "the shell must not carry a session"
+    );
+
+    // A client-side route resolves to the same shell, so a reload works.
+    for path in ["/console", "/console/admin/users", "/console/albums"] {
+        let response = app
+            .client
+            .get(format!("{base}{path}", base = app.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{path}");
+    }
+
+    // A traversal attempt is not an asset and never escapes the embedded tree.
+    let response = app
+        .client
+        .get(format!("{}/console/../../etc/passwd", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.status(), 200, "a traversal must not resolve");
+
+    // The console never widens the API: its routes still demand a session.
+    let anonymous = app
+        .client
+        .get(format!("{}/v1/console/photos", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+}

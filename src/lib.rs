@@ -17,6 +17,7 @@ pub mod store;
 mod tokens;
 pub mod user_cli;
 pub mod users;
+mod web;
 
 pub use config::{Config, Limits, LogFormat, LogLevel, LogSettings};
 pub use error::{Error, Result};

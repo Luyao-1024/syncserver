@@ -223,6 +223,9 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .route("/readyz", get(ready))
         .route("/v1/auth/login", post(auth::login))
         .merge(private)
+        // The console shell carries no user data, so it is served without a session.
+        // Everything it then fetches goes through the authenticated routes above.
+        .merge(crate::web::router())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, response_metadata))
 }
