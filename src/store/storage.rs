@@ -1,36 +1,68 @@
 //! Account-local resource accounting; never touches object bodies or sync counters.
 use super::leases::Guard;
 use crate::{Error, Result, domain::records::Failure};
-use rusqlite::{Connection, params};
-use serde::Serialize;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Usage {
+pub struct Usage {
     pub quota_bytes: u64,
     pub used_bytes: u64,
     pub reserved_bytes: u64,
     pub available_bytes: u64,
+    /// False when the figure came from a foreign account, where the lease deadline
+    /// could not be compared against the owning store's monotonic tick.
+    ///
+    /// This stays in process. `GET /v1/storage` is a published contract and must not
+    /// grow a field; the administration console reports the flag explicitly instead.
+    #[serde(skip_serializing, default = "own_store_is_exact")]
+    pub reserved_exact: bool,
     #[serde(flatten)]
     pub media_usage: MediaUsage,
 }
 
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MediaUsage {
-    image_bytes: u64,
-    video_bytes: u64,
-    other_bytes: u64,
+/// A usage report produced by the account's own store is exact by construction.
+fn own_store_is_exact() -> bool {
+    true
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum MediaKind {
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaUsage {
+    pub image_bytes: u64,
+    pub video_bytes: u64,
+    pub other_bytes: u64,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum MediaKind {
     Image,
     Video,
     Other,
 }
 
-fn media_kind(mime: &str, path: Option<&str>) -> MediaKind {
+impl MediaKind {
+    pub(crate) fn as_i64(self) -> i64 {
+        match self {
+            MediaKind::Image => 0,
+            MediaKind::Video => 1,
+            MediaKind::Other => 2,
+        }
+    }
+}
+
+/// The directory part of a photo's relative path, or the empty string for a photo
+/// that sits at the root. A rename moves the photo between albums because the index
+/// stores the same derived value the gallery groups by.
+pub(crate) fn album_of(relative_path: &str) -> String {
+    match relative_path.rfind('/') {
+        Some(at) => relative_path[..at].to_owned(),
+        None => String::new(),
+    }
+}
+
+pub(crate) fn media_kind(mime: &str, path: Option<&str>) -> MediaKind {
     if mime.starts_with("image/") {
         return MediaKind::Image;
     }
@@ -86,16 +118,39 @@ fn logical_usage(db: &Connection) -> Result<MediaUsage> {
     Ok(usage)
 }
 
+impl Usage {
+    /// A ceiling with nothing consumed and nothing in flight. Used when an account's
+    /// database cannot be read, so a single failure does not blank the deployment.
+    pub(crate) fn zero(quota_bytes: u64) -> Self {
+        Self {
+            quota_bytes,
+            used_bytes: 0,
+            reserved_bytes: 0,
+            available_bytes: quota_bytes,
+            reserved_exact: false,
+            media_usage: MediaUsage::default(),
+        }
+    }
+}
+
 pub(super) fn usage(db: &Connection, guard: &Guard<'_>) -> Result<Usage> {
     usage_at(
         db,
-        guard.config.limits.user_storage_quota_bytes,
+        guard.quota_bytes.load(std::sync::atomic::Ordering::Relaxed),
         crate::jobs::now_ms()?,
-        guard.clock.tick()?,
+        Some(guard.clock.tick()?),
     )
 }
 
-fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: i64) -> Result<Usage> {
+/// Usage for an account whose store this process does not hold open. The lease
+/// deadline is a per-store monotonic tick, so a foreign read can only judge
+/// reservations by wall clock; the resulting figure is an upper bound and the
+/// caller must report it as such.
+pub(crate) fn usage_foreign(db: &Connection, quota_bytes: u64) -> Result<Usage> {
+    usage_at(db, quota_bytes, crate::jobs::now_ms()?, None)
+}
+
+fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: Option<i64>) -> Result<Usage> {
     let media_usage = logical_usage(db)?;
     let used_bytes = media_usage
         .image_bytes
@@ -116,7 +171,7 @@ fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: i64) -> Res
          LEFT JOIN assets a ON a.namespace_id=r.namespace_id
              AND a.asset_id=json_extract(f.value,'$.value.assetId')
          WHERE s.namespace_id=1 AND s.state IN('Reserved','Receiving','PublishPrepared')
-             AND s.expires_at_ms>?1 AND l.deadline_tick_ms>?2",
+             AND s.expires_at_ms>?1 AND (?2 IS NULL OR l.deadline_tick_ms>?2)",
         params![now_ms, tick_ms],
         |row| row.get(0),
     )?;
@@ -125,6 +180,7 @@ fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: i64) -> Res
         quota_bytes,
         used_bytes,
         reserved_bytes,
+        reserved_exact: tick_ms.is_some(),
         available_bytes: quota_bytes
             .saturating_sub(used_bytes)
             .saturating_sub(reserved_bytes),
@@ -198,6 +254,97 @@ pub(super) fn check_record_growth(
     Ok(Ok(()))
 }
 
+/// The derived display fields of one photo, computed once from the trusted record
+/// and asset rows so the console index and the quota classification cannot drift.
+pub(crate) struct IndexRow {
+    pub photo_id: String,
+    pub relative_path: String,
+    pub asset_date_ms: Option<i64>,
+    pub favorite: bool,
+    pub hidden: bool,
+    pub album: String,
+    pub media_kind: MediaKind,
+}
+
+/// Reads the display fields for one photo from the rows that are already trusted.
+/// `fields_json` is the committed `CPLAsset` projection; the media classification
+/// uses the server's own asset MIME, never anything the client asserted.
+pub(crate) fn index_row(tx: &Connection, zone: &str, photo_id: &str) -> Result<IndexRow> {
+    let row: (String, Option<i64>, i64, i64) = tx.query_row(
+        "SELECT r.fields_json,
+                CASE WHEN json_extract(r.fields_json,'$.assetDate.type')='TIMESTAMP'
+                    THEN json_extract(r.fields_json,'$.assetDate.value') END,
+                COALESCE(json_extract(r.fields_json,'$.isFavorite.value'),0),
+                COALESCE(json_extract(r.fields_json,'$.isHidden.value'),0)
+         FROM records r JOIN photo_bindings b
+           ON b.namespace_id=r.namespace_id AND b.zone_name=r.zone_name AND b.photo_id=r.record_name
+         WHERE r.namespace_id=1 AND r.zone_name=?1 AND r.record_name=?2",
+        params![zone, photo_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let relative_path: String = tx.query_row(
+        "SELECT relative_path FROM photo_bindings
+         WHERE namespace_id=1 AND zone_name=?1 AND photo_id=?2",
+        params![zone, photo_id],
+        |row| row.get(0),
+    )?;
+    let mime: Option<String> = tx
+        .query_row(
+            "SELECT a.mime_type FROM photo_bindings b
+             JOIN assets a ON a.namespace_id=b.namespace_id AND a.asset_id=b.original_asset_id
+             WHERE b.namespace_id=1 AND b.zone_name=?1 AND b.photo_id=?2",
+            params![zone, photo_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(IndexRow {
+        photo_id: photo_id.to_owned(),
+        album: album_of(&relative_path),
+        media_kind: media_kind(mime.as_deref().unwrap_or_default(), Some(&relative_path)),
+        relative_path,
+        asset_date_ms: row.1,
+        favorite: row.2 != 0,
+        hidden: row.3 != 0,
+    })
+}
+
+/// Fills the console index columns for one photo. Called from the same transaction
+/// that wrote the binding, so the index cannot disagree with the photo graph.
+pub(crate) fn write_index_row(tx: &Connection, row: &IndexRow) -> Result<()> {
+    tx.execute(
+        "UPDATE photo_bindings SET asset_date_ms=?3, favorite=?4, hidden=?5, album=?6, media_kind=?7
+         WHERE namespace_id=1 AND photo_id=?1 AND relative_path=?2",
+        params![
+            row.photo_id,
+            row.relative_path,
+            row.asset_date_ms,
+            i64::from(row.favorite),
+            i64::from(row.hidden),
+            row.album,
+            row.media_kind.as_i64(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Backfills the console index after the v6 migration, using the same derivation as
+/// the write path rather than a second copy of the rules in SQL.
+pub(crate) fn backfill_photo_index(tx: &Connection) -> Result<()> {
+    let photos: Vec<(String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT zone_name, photo_id FROM photo_bindings
+             WHERE namespace_id=1 ORDER BY zone_name, photo_id",
+        )?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    for (zone, photo_id) in photos {
+        write_index_row(tx, &index_row(tx, &zone, &photo_id)?)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,12 +403,14 @@ mod tests {
         let mut db = Connection::open(root.path().join("metadata.sqlite")).unwrap();
         let generation = migrations::initialize(&mut db, &config, &[1; 32]).unwrap();
         let codec = TokenCodec::new([1; 32]);
+        let quota = std::sync::atomic::AtomicU64::new(config.limits.user_storage_quota_bytes);
         let clock = Clock::new();
         let guard = Guard {
             clock: &clock,
             config: &config,
             generation,
             codec: &codec,
+            quota_bytes: &quota,
         };
         let acquired = guard
             .control(
@@ -356,13 +505,13 @@ mod tests {
             }
             assert_eq!(usage(&db, &guard).unwrap().reserved_bytes, 10);
             assert_eq!(
-                usage_at(&db, 10, crate::jobs::now_ms().unwrap(), deadline)
+                usage_at(&db, 10, crate::jobs::now_ms().unwrap(), Some(deadline))
                     .unwrap()
                     .reserved_bytes,
                 0
             );
             assert_eq!(
-                usage_at(&db, 10, session.expires_at_ms, clock.tick().unwrap())
+                usage_at(&db, 10, session.expires_at_ms, Some(clock.tick().unwrap()))
                     .unwrap()
                     .reserved_bytes,
                 0

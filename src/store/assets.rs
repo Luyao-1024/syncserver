@@ -663,11 +663,13 @@ mod tests {
             let generation = migrations::initialize(&mut db, &config, &[1; 32]).unwrap();
             let codec = TokenCodec::new([1; 32]);
             let clock = Clock::new();
+            let quota = std::sync::atomic::AtomicU64::new(config.limits.user_storage_quota_bytes);
             let guard = Guard {
                 clock: &clock,
                 config: &config,
                 generation,
                 codec: &codec,
+                quota_bytes: &quota,
             };
             let lease = guard
                 .control(

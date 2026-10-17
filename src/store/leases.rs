@@ -39,6 +39,9 @@ pub(crate) struct Guard<'a> {
     pub config: &'a Config,
     pub generation: Uuid,
     pub codec: &'a TokenCodec,
+    /// Effective per-account ceiling, shared with the administration API so that a
+    /// quota change reaches admission checks and usage reports without a restart.
+    pub quota_bytes: &'a std::sync::atomic::AtomicU64,
 }
 #[derive(Debug)]
 pub(crate) struct Active {
@@ -364,12 +367,14 @@ mod tests {
         let mut db = Connection::open(root.path().join("metadata.sqlite")).unwrap();
         let generation = crate::store::migrations::initialize(&mut db, &config, &[1; 32]).unwrap();
         let codec = TokenCodec::new([1; 32]);
+        let quota = std::sync::atomic::AtomicU64::new(config.limits.user_storage_quota_bytes);
         let mut clock = Clock::new();
         let acquired = Guard {
             clock: &clock,
             config: &config,
             generation,
             codec: &codec,
+            quota_bytes: &quota,
         }
         .control(
             &mut db,
@@ -391,6 +396,7 @@ mod tests {
             config: &config,
             generation,
             codec: &codec,
+            quota_bytes: &quota,
         };
         assert!(
             matches!(guard.control(&mut db,Control::Renew(proof.clone())),Err(Error::Protocol(e))if e.code=="UPLOAD_LEASE_LOST")

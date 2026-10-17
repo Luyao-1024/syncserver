@@ -1,12 +1,16 @@
+pub(crate) mod admin_usage;
 mod assets;
+pub(crate) mod console;
 pub(crate) mod files;
 mod leases;
 mod migrations;
 mod records;
 mod storage;
 mod sync;
+pub use admin_usage::AccountUsage;
 pub(crate) use leases::lost as lease_lost;
 pub use records::Outcome;
+pub use storage::Usage;
 
 use crate::{
     Config, Error, Result,
@@ -69,6 +73,7 @@ enum Command {
         crate::domain::records::Lookup,
         oneshot::Sender<Result<Outcome>>,
     ),
+    Console(console::Request, oneshot::Sender<Result<serde_json::Value>>),
     #[cfg(test)]
     Hold(oneshot::Sender<()>, std::sync::mpsc::Receiver<()>),
 }
@@ -84,6 +89,9 @@ struct Inner {
     control_capacity: usize,
     control_rejections: AtomicU64,
     shutdown: tokio::sync::Mutex<()>,
+    /// Effective per-account storage ceiling. Mutable so an administrator can resize
+    /// an account without restarting the process.
+    quota_bytes: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -101,6 +109,8 @@ impl Store {
         let (sender, mut receiver) = mpsc::channel(config.limits.db_queue_capacity);
         let (control_sender, mut control_receiver) =
             mpsc::channel(config.limits.control_queue_capacity);
+        let quota_bytes = Arc::new(AtomicU64::new(config.limits.user_storage_quota_bytes));
+        let worker_quota = quota_bytes.clone();
         let inner = Arc::new(Inner {
             sender: Mutex::new(Some(sender)),
             control_sender: Mutex::new(Some(control_sender)),
@@ -112,6 +122,7 @@ impl Store {
             control_capacity: config.limits.control_queue_capacity,
             control_rejections: AtomicU64::new(0),
             shutdown: tokio::sync::Mutex::new(()),
+            quota_bytes,
         });
         let worker_inner = Arc::downgrade(&inner);
         let (startup, initialized) = oneshot::channel();
@@ -166,12 +177,12 @@ impl Store {
                     match command {
                         Command::Maintenance=>{if jobs::expire_sessions(&mut connection).is_err(){tracing::error!("upload expiry maintenance failed");}},
                         Command::Asset(request,reply)=>{
-                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens};
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
                             let _=reply.send(assets::execute(&mut connection,request,&guard));
                         }
                         Command::Read(request, codec, reply) => {
                             let needs_render=matches!(&request,crate::domain::sync::Read::Lookup(r) if r.snapshot_token.is_none());
-                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens};
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
                             let result=sync::read(
                                 &mut connection,
                                 request,
@@ -180,20 +191,24 @@ impl Store {
                                 database_generation,
                                 &guard,
                             );
-                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens};
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
                             let _=reply.send(if needs_render {render_outcome(&connection,result,&guard)}else{result});
                         }
                         Command::Control(request,reply)=>{
-                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens};
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
                             let result=guard.control(&mut connection,request);let _=reply.send(render_outcome(&connection,result,&guard));
                         }
                         Command::Modify(request, reply) => {
-                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens};
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
                             let result=records::modify(&mut connection,request,&guard);let _=reply.send(render_outcome(&connection,result,&guard));
+                        }
+                        Command::Console(request, reply) => {
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
+                            let _=reply.send(console::execute(&connection,&guard,request));
                         }
                         Command::Lookup(request, reply) => {
                             let result=records::lookup(&mut connection, request);
-                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens};
+                            let guard=leases::Guard{clock:&clock,config:&config,generation:database_generation,codec:&tokens,quota_bytes:&worker_quota};
                             let _=reply.send(render_outcome(&connection,result,&guard));
                         }
                         #[cfg(test)]
@@ -241,6 +256,16 @@ impl Store {
 
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+    /// The ceiling currently in force for this account.
+    pub fn quota_bytes(&self) -> u64 {
+        self.inner.quota_bytes.load(Ordering::Acquire)
+    }
+    /// Applying a new ceiling only changes the limit. Existing bytes are kept and
+    /// stay readable, downloadable and deletable; growth stops once the account is
+    /// already over the new value.
+    pub fn set_quota_bytes(&self, bytes: u64) {
+        self.inner.quota_bytes.store(bytes, Ordering::Release);
     }
     pub fn accepting(&self) -> bool {
         self.inner.alive.load(Ordering::Acquire)
@@ -336,6 +361,27 @@ impl Store {
             self.send(Command::Asset(request, reply))?;
         }
         response.await.map_err(|_| Error::WorkerFailed)?
+    }
+    /// This account's own usage, computed by the same code path as `GET /v1/storage`
+    /// and therefore with its own monotonic lease clock. The administration console
+    /// prefers this over a foreign read whenever the account's store is open.
+    /// Runs a console listing on this account's own database executor.
+    pub(crate) async fn console(&self, request: console::Request) -> Result<serde_json::Value> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::Console(request, reply))?;
+        response.await.map_err(|_| Error::WorkerFailed)?
+    }
+
+    pub(crate) async fn storage_usage(&self) -> Result<Usage> {
+        match self
+            .asset(crate::domain::assets::AssetCommand::Storage)
+            .await?
+        {
+            crate::domain::assets::AssetReply::Json(value) => {
+                serde_json::from_value(value).map_err(|_| Error::RecoveryFailed)
+            }
+            _ => Err(Error::WorkerFailed),
+        }
     }
     pub(crate) async fn control(&self, request: crate::domain::leases::Control) -> Result<Outcome> {
         let (reply, response) = oneshot::channel();

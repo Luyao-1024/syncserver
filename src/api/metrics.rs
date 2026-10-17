@@ -1,6 +1,9 @@
 //! Process-local operational snapshots. Reading these never enqueues database work.
 use super::AppState;
-use axum::Json;
+use axum::{
+    Json,
+    response::{IntoResponse, Response},
+};
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::Ordering};
 use tokio::sync::Semaphore;
@@ -38,7 +41,20 @@ pub(super) fn snapshot(state: &AppState) -> Value {
 
 pub(super) async fn read(
     axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
-) -> Json<Value> {
+) -> Response {
+    // The snapshot covers the whole process and every account. An API key deployment
+    // keeps its documented monitoring access; once accounts exist, only an
+    // administrator may read process-wide counters.
+    if let Some(user) = state.user.as_ref()
+        && !user.role.is_admin()
+    {
+        return super::error::ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "ADMIN_REQUIRED",
+            "This endpoint requires an administrator session",
+        )
+        .into_response();
+    }
     Json(json!({
         "version": 1,
         "runId": state.store.metadata().recovery.run_id,
@@ -46,4 +62,5 @@ pub(super) async fn read(
         "recovery": state.store.metadata().recovery,
         "metrics": snapshot(&state)
     }))
+    .into_response()
 }

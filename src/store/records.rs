@@ -459,7 +459,9 @@ fn apply(
     }
     for binding in bindings {
         tx.execute(
-            "INSERT INTO photo_bindings VALUES(1,?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO photo_bindings(namespace_id,zone_name,photo_id,master_record_name,
+                relative_path,content_generation,original_asset_id,thumbnail_asset_id)
+             VALUES(1,?1,?2,?3,?4,?5,?6,?7)",
             params![
                 zone.zone_name,
                 binding.photo_id,
@@ -470,6 +472,10 @@ fn apply(
                 binding.thumbnail_asset_id.to_string()
             ],
         )?;
+        // The console index is derived in this same transaction, so a listing can
+        // never describe a photo that the graph does not actually contain.
+        let index = super::storage::index_row(tx, &zone.zone_name, &binding.photo_id)?;
+        super::storage::write_index_row(tx, &index)?;
     }
     if let Err(error) = super::storage::check_record_growth(tx, guard, used_before)? {
         return Ok(Err(error));

@@ -1,5 +1,7 @@
+mod admin;
 mod assets;
 mod auth;
+mod console;
 mod error;
 mod json;
 mod leases;
@@ -46,10 +48,65 @@ pub(crate) struct AppState {
     pub thumbnail_downloads: Arc<Semaphore>,
     pub asset_metrics: Arc<crate::assets::Metrics>,
     pub publication: Arc<std::sync::Mutex<()>>,
-    requests: AtomicU64,
-    rejected: AtomicU64,
+    pub requests: AtomicU64,
+    pub rejected: AtomicU64,
     database_change_pages: AtomicU64,
     zone_change_pages: AtomicU64,
+    /// Request accounting for the administration console. Counters live on the
+    /// deployment's own context, so they describe the whole process rather than one
+    /// account's namespace.
+    pub http: HttpStats,
+    /// A bounded ring of recent process readings, filled by the sampler that runs for
+    /// as long as the server does.
+    pub samples: std::sync::Arc<crate::host::History>,
+}
+
+/// Per-route request counters.
+///
+/// Routes are the matched path patterns, not the raw paths, so the map is bounded by
+/// the number of routes this binary declares rather than by anything a caller sends.
+#[derive(Default)]
+pub struct HttpStats {
+    pub success: AtomicU64,
+    pub client_errors: AtomicU64,
+    pub server_errors: AtomicU64,
+    /// Requests that took at least a second.
+    pub slow: AtomicU64,
+    pub total_ms: AtomicU64,
+    pub slowest_ms: AtomicU64,
+    routes: std::sync::Mutex<std::collections::BTreeMap<String, RouteStats>>,
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct RouteStats {
+    pub requests: u64,
+    pub errors: u64,
+    pub total_ms: u64,
+}
+
+impl HttpStats {
+    pub fn routes(&self) -> Vec<(String, RouteStats)> {
+        self.routes
+            .lock()
+            .map(|routes| {
+                routes
+                    .iter()
+                    .map(|(name, stats)| (name.clone(), *stats))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for HttpStats {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpStats")
+            .field("success", &self.success.load(Ordering::Relaxed))
+            .field("clientErrors", &self.client_errors.load(Ordering::Relaxed))
+            .field("serverErrors", &self.server_errors.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 impl AppState {
@@ -81,6 +138,8 @@ impl AppState {
             control_admission: Arc::new(Semaphore::new(config.limits.control_queue_capacity)),
             requests: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            http: HttpStats::default(),
+            samples: std::sync::Arc::new(crate::host::History::default()),
             database_change_pages: AtomicU64::new(0),
             zone_change_pages: AtomicU64::new(0),
             metrics_admission: Arc::new(Semaphore::new(1)),
@@ -88,11 +147,34 @@ impl AppState {
     }
 }
 
+/// An administrator administers the deployment; it does not hold a photo library.
+///
+/// Every route that could read or write an account's photo namespace lives in the
+/// `namespace` group below, and this middleware refuses an administrator session
+/// before the handler runs. That is what makes "administrators cannot synchronize"
+/// an enforced fact rather than a UI convention: the refusal covers the record,
+/// resource, lease and console APIs alike, so there is no path by which an
+/// administrator could place or read a photo.
+async fn deny_admin_namespace(
+    Extension(state): Extension<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if state.user.as_ref().is_some_and(|user| user.role.is_admin()) {
+        return ApiError::new(
+            StatusCode::FORBIDDEN,
+            "ADMIN_CANNOT_SYNC",
+            "An administrator account manages the deployment and has no photo library",
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
 pub(crate) fn router(state: Arc<AppState>) -> Router {
-    let private = Router::new()
-        .route("/v1/auth/logout", post(auth::logout))
-        .route("/v1/capabilities", get(capabilities))
-        .route("/v1/metrics", get(metrics::read))
+    // Routes that touch an account's photo namespace, and therefore only an ordinary
+    // account may reach.
+    let namespace = Router::new()
         .route("/v1/snapshots", post(snapshot))
         .route("/v1/storage", get(assets::storage))
         .route("/v1/uploads/{id}", get(assets::session))
@@ -103,12 +185,38 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .route("/v1/upload-leases", post(leases::acquire))
         .route("/v1/upload-leases/{id}/{operation}", post(leases::control))
         .route("/v1/operations/{id}", get(leases::status))
+        .route("/v1/console/photos", get(console::photos))
+        .route("/v1/console/photos/{id}", get(console::photo))
+        .route("/v1/console/albums", get(console::albums))
+        .route("/v1/console/timeline", get(console::timeline))
+        .route("/v1/console/summary", get(console::summary))
         .route("/v1/{*operation}", any(native_unsupported))
         .route(
             "/database/1/{container}/{environment}/{database}/{*operation}",
             any(cloudkit),
         )
         .fallback(unknown)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            deny_admin_namespace,
+        ));
+
+    let private = Router::new()
+        .route("/v1/auth/logout", post(auth::logout))
+        .route("/v1/capabilities", get(capabilities))
+        .route("/v1/metrics", get(metrics::read))
+        .route("/v1/admin/overview", get(admin::overview))
+        .route("/v1/admin/logs", get(admin::logs))
+        .route(
+            "/v1/admin/users",
+            get(admin::users).post(admin::create_user),
+        )
+        .route("/v1/admin/users/{id}/storage", get(admin::storage))
+        .route("/v1/admin/users/{id}/quota", post(admin::set_quota))
+        .route("/v1/admin/users/{id}/role", post(admin::set_role))
+        .route("/v1/admin/users/{id}/password", post(admin::set_password))
+        .route("/v1/admin/users/{id}/enabled", post(admin::set_enabled))
+        .merge(namespace)
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/healthz", get(health))
@@ -119,6 +227,87 @@ pub(crate) fn router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn_with_state(state, response_metadata))
 }
 
+/// Folds one completed request into the console's counters.
+///
+/// The route recorded is the matched pattern, which the router places in the request
+/// extensions before this runs. Anything unmatched is folded into a single bucket, so
+/// a caller cannot grow the map by sending arbitrary paths.
+fn record_request(
+    state: &Arc<AppState>,
+    matched: Option<&str>,
+    method: &str,
+    request_path: &str,
+    status: u16,
+    duration_ms: u64,
+) {
+    let stats = &state.http;
+    let errored = status >= 400;
+    if errored {
+        if status >= 500 {
+            stats.server_errors.fetch_add(1, Ordering::Relaxed);
+        } else {
+            stats.client_errors.fetch_add(1, Ordering::Relaxed);
+        }
+    } else {
+        stats.success.fetch_add(1, Ordering::Relaxed);
+    }
+    if duration_ms >= 1000 {
+        stats.slow.fetch_add(1, Ordering::Relaxed);
+    }
+    stats.total_ms.fetch_add(duration_ms, Ordering::Relaxed);
+    stats.slowest_ms.fetch_max(duration_ms, Ordering::Relaxed);
+
+    let name = match matched {
+        Some(pattern) => format!("{method} {pattern}"),
+        // Not every route reports a matched pattern, so the raw path is folded into a
+        // shape instead: `/v1/assets/<id>` and `/v1/assets/<other id>` are one row.
+        None => format!("{method} {}", route_shape(request_path)),
+    };
+    if let Ok(mut routes) = stats.routes.lock() {
+        if !routes.contains_key(&name) && routes.len() >= MAX_TRACKED_ROUTES {
+            // A hard bound: however many distinct shapes arrive, the table cannot grow
+            // without limit. Anything new from here lands in the same catch-all row.
+            let name = format!("{method} (other)");
+            let route = routes.entry(name).or_default();
+            route.requests += 1;
+            route.total_ms = route.total_ms.saturating_add(duration_ms);
+            route.errors += u64::from(errored);
+            return;
+        }
+        let route = routes.entry(name).or_default();
+        route.requests += 1;
+        route.total_ms = route.total_ms.saturating_add(duration_ms);
+        route.errors += u64::from(errored);
+    }
+}
+
+/// How many distinct route shapes the console will keep separate rows for.
+const MAX_TRACKED_ROUTES: usize = 128;
+
+/// Collapses a request path into a route shape, so identifiers do not each become
+/// their own row. A segment that is a number, a UUID or a long opaque token becomes
+/// `:id`; everything else is kept, because that is the part a reader recognizes.
+fn route_shape(path: &str) -> String {
+    let mut shape = String::with_capacity(path.len());
+    for (index, segment) in path.split('/').enumerate() {
+        if index > 0 {
+            shape.push('/');
+        }
+        if segment.is_empty() {
+            continue;
+        }
+        let opaque = (segment.len() >= 3 && segment.parse::<u64>().is_ok())
+            || segment.len() >= 32
+            || (segment.len() >= 16 && segment.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'));
+        shape.push_str(if opaque { ":id" } else { segment });
+    }
+    if shape.is_empty() {
+        "/".to_owned()
+    } else {
+        shape
+    }
+}
+
 async fn response_metadata(
     State(state): State<Arc<AppState>>,
     request: Request,
@@ -126,12 +315,17 @@ async fn response_metadata(
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let request_id = Uuid::new_v4();
-    let method = request.method().clone();
     let route = request.uri().path().to_owned();
     // Health, readiness and metrics are polled continuously and must not drown the
     // operational stream, so probe traffic stays at debug.
     let probe = matches!(route.as_str(), "/healthz" | "/readyz" | "/v1/metrics");
     let started = Instant::now();
+    // The matched route is read before the request is consumed.
+    let matched = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|path| path.as_str().to_owned());
+    let method = request.method().as_str().to_owned();
     let mut response = next
         .run(request)
         .instrument(tracing::info_span!(
@@ -147,6 +341,14 @@ async fn response_metadata(
         .get::<error::ResponseError>()
         .map(|value| value.0);
     let status = response.status().as_u16();
+    record_request(
+        &state,
+        matched.as_deref(),
+        &method,
+        route.as_str(),
+        status,
+        duration_ms,
+    );
     let level = if probe {
         tracing::Level::DEBUG
     } else if status >= 500 {
@@ -166,9 +368,14 @@ async fn response_metadata(
         error_code,
         "request completed"
     );
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    // Responses are private and live by default. A handler that deliberately set a
+    // cache policy — the console's content-hashed bundles — keeps it; everything else,
+    // including every API response, is explicitly not stored.
+    if !response.headers().contains_key(header::CACHE_CONTROL) {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    }
     response
         .headers_mut()
         .insert("x-request-id", request_id.to_string().parse().unwrap());
@@ -306,6 +513,11 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
 }
 
 async fn capabilities(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
+    // An administrator has no photo library, so it is offered no synchronization
+    // capability at all. Advertising them and then refusing the calls would leave a
+    // client guessing which half of the contract to believe.
+    let administrator = state.user.as_ref().is_some_and(|user| user.role.is_admin());
+    let syncs = !administrator;
     Json(json!({
         "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M4",
         "namespace": state.config.namespace, "zones": state.config.zones,
@@ -313,10 +525,12 @@ async fn capabilities(Extension(state): Extension<Arc<AppState>>) -> Json<Value>
         "publicBaseURL": state.config.public_base_url.as_str(),
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,
+        "administrator": administrator,
         "capabilities": {
-            "storageQuota": true, "storageUsageByMediaType": true, "zoneListing": true, "recordCrud": true, "snapshots": true,
-            "incrementalChanges": true, "uploadLeases": true, "fencing": true, "uploadPhases": true, "operationStatusRead": true, "tokenCurrentGate": true, "queryBatch": true, "changeAliases": true, "assetUpload": true, "assetDownload": true,
-            "operationalMetrics": true, "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": true
+            "storageQuota": syncs, "storageUsageByMediaType": syncs, "zoneListing": syncs, "recordCrud": syncs, "snapshots": syncs,
+            "incrementalChanges": syncs, "uploadLeases": syncs, "fencing": syncs, "uploadPhases": syncs, "operationStatusRead": syncs, "tokenCurrentGate": syncs, "queryBatch": syncs, "changeAliases": syncs, "assetUpload": syncs, "assetDownload": syncs,
+            "operationalMetrics": true, "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": syncs,
+            "webConsole": syncs, "adminConsole": administrator
         },
         "limits": state.config.limits,
         "protocolVersion": 1, "checksumAlgorithm": "SHA256", "historyRetention": "all",
@@ -538,5 +752,37 @@ async fn snapshot(Extension(state): Extension<Arc<AppState>>, request: Request) 
     match read_json(request, state.config.limits.json_body_limit).await {
         Ok(value) => sync::read(&state, "snapshots", value).await,
         Err(error) => error.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::route_shape;
+
+    #[test]
+    fn identifiers_collapse_into_one_route_shape() {
+        assert_eq!(route_shape("/v1/assets/abc"), "/v1/assets/abc");
+        // A UUID, a long digest and a number are all the same kind of thing to a
+        // reader: a value in the position of a route parameter.
+        assert_eq!(
+            route_shape("/v1/assets/d95b30c9-8e57-4817-9ee3-f156a061d8d5/content"),
+            "/v1/assets/:id/content"
+        );
+        assert_eq!(
+            route_shape("/v1/assets/0123456789abcdef0123456789abcdef"),
+            "/v1/assets/:id"
+        );
+        assert_eq!(route_shape("/v1/operations/42"), "/v1/operations/42");
+        assert_eq!(route_shape("/v1/operations/4242"), "/v1/operations/:id");
+        // The part a reader recognizes is kept.
+        assert_eq!(
+            route_shape("/v1/upload-leases/38d2e51f-6319-4400-bfcd-3875f1bcfdbb/phase"),
+            "/v1/upload-leases/:id/phase"
+        );
+        assert_eq!(
+            route_shape("/database/1/com.apple.photos.cloud/production/private/records/modify"),
+            "/database/1/com.apple.photos.cloud/production/private/records/modify"
+        );
+        assert_eq!(route_shape("/"), "/");
     }
 }

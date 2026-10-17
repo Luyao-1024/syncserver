@@ -10,6 +10,9 @@ pub struct RecoveryReport {
     pub interrupted_starts: u64,
     pub asset_bytes_read: u64,
     pub asset_bytes_hashed: u64,
+    /// When this run started, so an operator can see how long a process has been up
+    /// without inferring it from a counter that resets on restart.
+    pub started_at_ms: i64,
 }
 
 // Metadata recovery checks the database and settles interrupted starts. M4 will add
@@ -33,9 +36,10 @@ pub(crate) fn recover(
         "UPDATE service_starts SET state='Interrupted' WHERE state IN ('Recovering','Ready')",
         [],
     )?;
+    let started_at_ms = now_ms()?;
     tx.execute(
         "INSERT INTO service_starts (run_id, started_at_ms, state) VALUES (?1, ?2, 'Recovering')",
-        params![run_id.to_string(), now_ms()?],
+        params![run_id.to_string(), started_at_ms],
     )?;
     tx.commit()?;
     let (asset_bytes_read, asset_bytes_hashed) = crate::assets::recover(connection, root)?;
@@ -46,6 +50,7 @@ pub(crate) fn recover(
         interrupted_starts: interrupted as u64,
         asset_bytes_read,
         asset_bytes_hashed,
+        started_at_ms,
     };
     tracing::info!(
         run_id = %report.run_id,

@@ -11,6 +11,7 @@ mod config;
 mod credentials;
 pub mod domain;
 mod error;
+mod host;
 pub mod jobs;
 pub mod store;
 mod tokens;
@@ -22,11 +23,32 @@ pub use error::{Error, Result};
 use std::{
     future::Future,
     sync::{Arc, atomic::Ordering},
+    time::Duration,
 };
 use tokio::net::TcpListener;
 
 pub struct Server {
     state: Arc<api::AppState>,
+}
+
+/// How often the process records a reading of itself.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Records this process's memory, CPU and request counters on a fixed cadence.
+async fn sampling_loop(state: Arc<api::AppState>) {
+    let mut ticker = tokio::time::interval(SAMPLE_INTERVAL);
+    // A tick missed because the runtime was busy measures a longer window than the
+    // one the chart implies, so it is skipped rather than compressed.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let http = &state.http;
+        state.samples.record(
+            state.requests.load(Ordering::Relaxed),
+            http.client_errors.load(Ordering::Relaxed),
+            http.server_errors.load(Ordering::Relaxed),
+        );
+    }
 }
 
 impl Server {
@@ -92,12 +114,20 @@ impl Server {
         F: Future<Output = ()> + Send + 'static,
     {
         let state = self.state.clone();
+        // A fixed-rate sampler keeps a recent history of this process's own footprint.
+        // It runs for the life of the service rather than only while a console is
+        // open, so the first person to open the dashboard sees the last quarter hour
+        // rather than an empty chart.
+        let sampling = tokio::spawn(sampling_loop(state.clone()));
         let result = axum::serve(listener, self.router())
             .with_graceful_shutdown(async move {
                 shutdown.await;
                 state.ready.store(false, Ordering::Release);
             })
             .await;
+        // Sampling stops before the state it reads is torn down, so the task never
+        // outlives the counters it samples.
+        sampling.abort();
         self.state.ready.store(false, Ordering::Release);
         if let Some(authority) = &self.state.authority {
             authority.shutdown().await?;

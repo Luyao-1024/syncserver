@@ -9,6 +9,10 @@ pub enum Error {
     Protocol(crate::domain::records::Failure),
     #[error("CONFIG_INVALID: {0}")]
     Config(&'static str),
+    /// A well-formed request that conflicts with the state of the deployment. Kept
+    /// apart from `Config` because the answer is a conflict, not a malformed request.
+    #[error("LAST_ADMINISTRATOR: the deployment must keep one enabled administrator")]
+    LastAdministrator,
     #[error("CONFIG_SCOPE_MISMATCH: namespace or zone set differs from the existing database")]
     ScopeMismatch,
     #[error("SIGNING_KEY_MISMATCH: existing directory requires its original signing key")]
@@ -39,6 +43,7 @@ impl Error {
         match self {
             Self::Protocol(_) => "PROTOCOL_ERROR",
             Self::Config(_) => "CONFIG_INVALID",
+            Self::LastAdministrator => "LAST_ADMINISTRATOR",
             Self::ScopeMismatch => "CONFIG_SCOPE_MISMATCH",
             Self::SigningKeyMismatch => "SIGNING_KEY_MISMATCH",
             Self::DataDirLocked => "DATA_DIR_LOCKED",

@@ -403,7 +403,9 @@ async fn users_have_independent_quotas_and_identical_content_is_charged_to_each(
     const PASSWORD: &str = "synthetic-storage-password";
     let users = Users::open(&root.path().join("data")).unwrap();
     for name in ["alice", "bob"] {
-        users.create(name, PASSWORD, false).unwrap();
+        users
+            .create(name, PASSWORD, false, syncserver::users::Role::User)
+            .unwrap();
     }
     drop(users);
     let app = Running::start(config).await;

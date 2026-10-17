@@ -467,11 +467,13 @@ mod tests {
         .unwrap();
         let clock = super::super::leases::Clock::new();
         let codec = TokenCodec::new([1; 32]);
+        let quota = std::sync::atomic::AtomicU64::new(config.limits.user_storage_quota_bytes);
         let guard = super::super::leases::Guard {
             clock: &clock,
             config: &config,
             generation,
             codec: &codec,
+            quota_bytes: &quota,
         };
         let tx = db.transaction().unwrap();
         let context = Context {

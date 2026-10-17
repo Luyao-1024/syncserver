@@ -89,6 +89,27 @@ impl Authority {
             .filter(|u| Some(&u.id) == state.user.as_ref().map(|u| &u.id))
             .map(|_| state))
     }
+    /// Pushes a new ceiling into an already-open context so an administrator sees
+    /// the effect immediately. An account with no open context picks the value up
+    /// from the catalogue the next time it authenticates.
+    pub fn apply_quota(&self, id: &str, bytes: u64) -> Result<()> {
+        let contexts = self.contexts.lock().map_err(|_| Error::WorkerFailed)?;
+        if let Some(state) = contexts.get(id).and_then(|cell| cell.get()) {
+            state.store.set_quota_bytes(bytes);
+        }
+        Ok(())
+    }
+    /// The store of an account this process currently holds open, if any. The
+    /// administration console uses it to compute that account's usage exactly rather
+    /// than as a bound, because the lease clock belongs to that store.
+    pub fn open_store(&self, id: &str) -> Option<Store> {
+        self.contexts
+            .lock()
+            .ok()?
+            .get(id)
+            .and_then(|cell| cell.get())
+            .map(|state| state.store.clone())
+    }
     async fn open_context(&self, user: User) -> Result<Arc<AppState>> {
         let mut config = self.config.clone();
         let credentials;
@@ -104,6 +125,13 @@ impl Authority {
                 .map_err(|_| Error::WorkerFailed)??;
             config.data_dir = config.data_dir.join("users").join(&user.id);
             config.namespace.tenant = user.id.clone();
+            // The per-account override is resolved here and nowhere else: the store's
+            // database worker captures this config, so every quota check, admission
+            // decision and usage report for this account uses the same ceiling.
+            if let Some(bytes) = user.quota_bytes {
+                config.limits.user_storage_quota_bytes =
+                    u64::try_from(bytes).map_err(|_| Error::RecoveryFailed)?;
+            }
             credentials = self.credentials.scoped(&user.id)?;
             store = Store::open(
                 config.clone(),
