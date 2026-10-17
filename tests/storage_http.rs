@@ -26,7 +26,15 @@ async fn usage(app: &Running, auth: &str) -> Value {
         .unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["cache-control"], "no-store");
-    response.json().await.unwrap()
+    let value: Value = response.json().await.unwrap();
+    assert_eq!(
+        value["imageBytes"].as_u64().unwrap()
+            + value["videoBytes"].as_u64().unwrap()
+            + value["otherBytes"].as_u64().unwrap(),
+        value["usedBytes"].as_u64().unwrap()
+    );
+    assert!(value.get("thumbnailBytes").is_none());
+    value
 }
 async fn ready(app: &Running, auth: &str) -> Lease {
     let lease = common::ready(
@@ -160,7 +168,8 @@ async fn quota_query_requires_identity_has_no_scope_override_and_advertises_20gb
         usage(&app, API_KEY).await,
         json!({
             "quotaBytes":20_000_000_000u64, "usedBytes":0, "reservedBytes":0,
-            "availableBytes":20_000_000_000u64
+            "availableBytes":20_000_000_000u64,
+            "imageBytes":0,"videoBytes":0,"otherBytes":0
         })
     );
     for query in ["?user=bob", "?namespace=other", "?quotaBytes=999", "?"] {
@@ -176,6 +185,10 @@ async fn quota_query_requires_identity_has_no_scope_override_and_advertises_20gb
     }
     let capabilities = get(&app, API_KEY, "/v1/capabilities").await;
     assert_eq!(capabilities["capabilities"]["storageQuota"], true);
+    assert_eq!(
+        capabilities["capabilities"]["storageUsageByMediaType"],
+        true
+    );
     assert_eq!(
         capabilities["limits"]["userStorageQuotaBytes"],
         20_000_000_000u64
@@ -395,6 +408,7 @@ async fn users_have_independent_quotas_and_identical_content_is_charged_to_each(
     drop(users);
     let app = Running::start(config).await;
     let mut descriptors = vec![];
+    let mut accounts = vec![];
     for name in ["alice", "bob"] {
         let login: Value = app
             .client
@@ -416,17 +430,18 @@ async fn users_have_independent_quotas_and_identical_content_is_charged_to_each(
         assert_eq!(status, 200, "{published}");
         descriptors.push(published["singleFile"]["assetId"].clone());
         assert_eq!(usage(&app, token).await["usedBytes"], 0);
+        let mut operation = file("same-file", &published["singleFile"]);
+        let (path, category) = if name == "alice" {
+            ("clip.MP4", "videoBytes")
+        } else {
+            ("photo.HEIC", "imageBytes")
+        };
+        operation["record"]["fields"]["relativePath"] = json!({"type":"STRING","value":path});
+        accounts.push((token.to_owned(), category));
         assert_eq!(
-            modify(
-                &app,
-                token,
-                &lease,
-                vec![file("same-file", &published["singleFile"])],
-                "create",
-                true
-            )
-            .await
-            .0,
+            modify(&app, token, &lease, vec![operation], "create", true)
+                .await
+                .0,
             200
         );
         assert_eq!(usage(&app, token).await["usedBytes"], 4);
@@ -436,6 +451,11 @@ async fn users_have_independent_quotas_and_identical_content_is_charged_to_each(
         );
     }
     assert_ne!(descriptors[0], descriptors[1]);
+    for (token, category) in accounts {
+        let value = usage(&app, &token).await;
+        assert_eq!(value[category], 4);
+        assert_eq!(value["otherBytes"], 0);
+    }
     app.stop().await;
 }
 
@@ -501,6 +521,8 @@ async fn photo_pair_charges_both_roles_and_deletion_releases_logical_usage() {
     assert_eq!(response.status(), 200);
     let created: Value = response.json().await.unwrap();
     assert_eq!(usage(&app, API_KEY).await["availableBytes"], 0);
+    assert_eq!(usage(&app, API_KEY).await["imageBytes"], quota);
+    assert_eq!(usage(&app, API_KEY).await["videoBytes"], 0);
     assert_eq!(
         lease
             .control(&app.client, &app.base, API_KEY, "release", json!({}))
@@ -731,5 +753,147 @@ async fn replacement_reserves_only_growth_and_over_quota_metadata_and_shrinking_
     assert_eq!(status, 200, "{deleted}");
     assert_eq!(usage(&app, API_KEY).await["usedBytes"], 4);
     assert_eq!(usage(&app, API_KEY).await["availableBytes"], 2);
+    app.stop().await;
+}
+
+fn media_pair(tag: &str, path: &str, original: &Value, thumbnail: &Value) -> Vec<Value> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let fixture: Value =
+        serde_json::from_str(include_str!("../docs/contracts/fixtures.json")).unwrap();
+    let generation = uuid::Uuid::new_v4().to_string();
+    let master_name = format!("{tag}-master");
+    let photo_name = format!("{tag}-photo");
+    let digest: String = STANDARD
+        .decode(original["fileChecksum"].as_str().unwrap())
+        .unwrap()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let mut operations = fixture["createPhotoRequest"]["operations"]
+        .as_array()
+        .unwrap()
+        .clone();
+    for operation in &mut operations {
+        let record = &mut operation["record"];
+        record["fields"]["contentGeneration"]["value"] = json!(generation);
+        if record["recordType"] == "CPLMaster" {
+            record["recordName"] = json!(master_name);
+            record["fields"]["photoId"]["value"] = json!(photo_name);
+            record["fields"]["resOriginalRes"]["value"] = original.clone();
+            record["fields"]["resJPEGThumbRes"]["value"] = thumbnail.clone();
+            record["fields"]["thumbnailSourceOriginalSHA256"]["value"] = json!(digest);
+        } else {
+            record["recordName"] = json!(photo_name);
+            record["fields"]["masterRef"]["value"]["recordName"] = json!(master_name);
+            record["fields"]["relativePath"]["value"] = json!(path);
+        }
+    }
+    operations
+}
+
+#[tokio::test]
+async fn media_breakdown_attributes_shared_thumbnails_to_owners_and_reclassifies_metadata_only() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let root = tempfile::tempdir().unwrap();
+    let config = common::config(root.path());
+    let app = Running::start(config.clone()).await;
+    let lease = ready(&app, API_KEY).await;
+    let fixture: Value =
+        serde_json::from_str(include_str!("../docs/contracts/fixtures.json")).unwrap();
+    let mut descriptions = vec![];
+    for (index, item) in fixture["binaryAssets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let bytes = STANDARD
+            .decode(item["bytesBase64"].as_str().unwrap())
+            .unwrap();
+        let mut body = request(&[bytes.len() as u64]);
+        if item["role"] == "thumbnail" {
+            body["tokens"][0]["fieldName"] = json!("resJPEGThumbRes");
+            body["tokens"][0]["_syncserver"]["role"] = json!("thumbnail");
+        }
+        let (status, reserved) =
+            reserve(&app, API_KEY, &lease, &body, &format!("media-{index}")).await;
+        assert_eq!(status, 200);
+        let (status, published) = upload(&app, API_KEY, &lease, &reserved, &bytes).await;
+        assert_eq!(status, 200, "{published}");
+        descriptions.push(published["singleFile"].clone());
+    }
+    let (_, reserved) = reserve(&app, API_KEY, &lease, &request(&[6]), "video-original").await;
+    let (status, video) = upload(&app, API_KEY, &lease, &reserved, b"opaque").await;
+    assert_eq!(status, 200);
+    assert_eq!(video["singleFile"]["mimeType"], "application/octet-stream");
+    let video = &video["singleFile"];
+    let image_size = descriptions[0]["size"].as_u64().unwrap();
+    let thumbnail_size = descriptions[1]["size"].as_u64().unwrap();
+    let video_size = video["size"].as_u64().unwrap();
+    // One shared image thumbnail belongs to an image, two video files and an
+    // unknown file. Categories follow each owner, never the thumbnail's MIME.
+    let mut operations = media_pair(
+        "image",
+        "pictures/照片.MOV",
+        &descriptions[0],
+        &descriptions[1],
+    );
+    operations.extend(media_pair(
+        "video",
+        "movies/片段.MP4",
+        video,
+        &descriptions[1],
+    ));
+    operations.extend(media_pair(
+        "copy",
+        "movies/copy.mkv",
+        video,
+        &descriptions[1],
+    ));
+    operations.extend(media_pair(
+        "unknown",
+        "misc/data.bin",
+        video,
+        &descriptions[1],
+    ));
+    let (status, created) = modify(&app, API_KEY, &lease, operations, "media-create", true).await;
+    assert_eq!(status, 200, "{created}");
+    let expected = usage(&app, API_KEY).await;
+    assert_eq!(expected["imageBytes"], image_size + thumbnail_size);
+    assert_eq!(expected["videoBytes"], 2 * (video_size + thumbnail_size));
+    assert_eq!(expected["otherBytes"], video_size + thumbnail_size);
+    let baseline = snapshot(&app).await;
+    let before = get(&app, API_KEY, "/v1/metrics").await;
+    for _ in 0..10 {
+        assert_eq!(usage(&app, API_KEY).await, expected);
+    }
+    let after = get(&app, API_KEY, "/v1/metrics").await;
+    for field in ["assetBytesRead", "assetBytesHashed"] {
+        assert_eq!(before["metrics"][field], after["metrics"][field]);
+    }
+    assert_eq!(snapshot(&app).await, baseline);
+    app.stop().await;
+    let app = Running::start(config).await;
+    assert_eq!(usage(&app, API_KEY).await, expected);
+    assert_eq!(snapshot(&app).await, baseline);
+    let photo = created["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["recordName"] == "video-photo")
+        .unwrap();
+    let (status, renamed) = common::fixture_modify(&app, json!({"operations":[{
+        "operationType":"update", "record":{"recordName":"video-photo", "recordChangeTag":photo["recordChangeTag"],
+            "fields":{"relativePath":{"type":"STRING","value":"pictures/reclassified.HEIC"}}}
+    }]}), Some("reclassify")).await;
+    assert_eq!(status, 200, "{renamed}");
+    let changed = usage(&app, API_KEY).await;
+    assert_eq!(changed["usedBytes"], expected["usedBytes"]);
+    assert_eq!(
+        changed["imageBytes"],
+        image_size + video_size + 2 * thumbnail_size
+    );
+    assert_eq!(changed["videoBytes"], video_size + thumbnail_size);
+    assert_eq!(changed["otherBytes"], video_size + thumbnail_size);
     app.stop().await;
 }

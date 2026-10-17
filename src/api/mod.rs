@@ -314,7 +314,7 @@ async fn capabilities(Extension(state): Extension<Arc<AppState>>) -> Json<Value>
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,
         "capabilities": {
-            "storageQuota": true, "zoneListing": true, "recordCrud": true, "snapshots": true,
+            "storageQuota": true, "storageUsageByMediaType": true, "zoneListing": true, "recordCrud": true, "snapshots": true,
             "incrementalChanges": true, "uploadLeases": true, "fencing": true, "uploadPhases": true, "operationStatusRead": true, "tokenCurrentGate": true, "queryBatch": true, "changeAliases": true, "assetUpload": true, "assetDownload": true,
             "operationalMetrics": true, "appleAuthentication": false, "sharing": false, "uploadResume": false, "photoPublication": true
         },

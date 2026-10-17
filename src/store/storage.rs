@@ -11,6 +11,79 @@ pub(super) struct Usage {
     pub used_bytes: u64,
     pub reserved_bytes: u64,
     pub available_bytes: u64,
+    #[serde(flatten)]
+    pub media_usage: MediaUsage,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MediaUsage {
+    image_bytes: u64,
+    video_bytes: u64,
+    other_bytes: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MediaKind {
+    Image,
+    Video,
+    Other,
+}
+
+fn media_kind(mime: &str, path: Option<&str>) -> MediaKind {
+    if mime.starts_with("image/") {
+        return MediaKind::Image;
+    }
+    if mime.starts_with("video/") {
+        return MediaKind::Video;
+    }
+    let extension = path
+        .and_then(|path| std::path::Path::new(path).extension())
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "jpg" | "jpeg" | "jpe" | "png" | "apng" | "gif" | "webp" | "bmp" | "dib" | "tif"
+        | "tiff" | "heic" | "heif" | "avif" | "jxl" | "ico" | "svg" | "dng" | "cr2" | "cr3"
+        | "nef" | "nrw" | "arw" | "srf" | "sr2" | "orf" | "rw2" | "raf" | "pef" | "srw" => {
+            MediaKind::Image
+        }
+        "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "mpeg" | "mpg" | "m2v" | "m2ts"
+        | "mts" | "ts" | "3gp" | "3g2" | "ogv" | "wmv" | "asf" | "flv" | "vob" => MediaKind::Video,
+        _ => MediaKind::Other,
+    }
+}
+
+fn logical_usage(db: &Connection) -> Result<MediaUsage> {
+    let mut statement = db.prepare(
+        "SELECT a.size, COALESCE(original.mime_type,a.mime_type),
+             COALESCE(b.relative_path,CASE WHEN json_extract(r.fields_json,'$.relativePath.type')='STRING'
+                 THEN json_extract(r.fields_json,'$.relativePath.value') END)
+         FROM records r
+         JOIN json_each(r.fields_json) f
+         JOIN assets a ON a.namespace_id=r.namespace_id
+             AND a.asset_id=json_extract(f.value,'$.value.assetId')
+         LEFT JOIN assets original ON original.namespace_id=r.namespace_id
+             AND json_extract(r.fields_json,'$.resOriginalRes.type')='ASSETID'
+             AND original.asset_id=json_extract(r.fields_json,'$.resOriginalRes.value.assetId')
+         LEFT JOIN photo_bindings b ON b.namespace_id=r.namespace_id AND b.zone_name=r.zone_name
+             AND b.master_record_name=r.record_name
+         WHERE r.namespace_id=1 AND r.deleted=0 AND json_extract(f.value,'$.type')='ASSETID'"
+    )?;
+    let mut rows = statement.query([])?;
+    let mut usage = MediaUsage::default();
+    while let Some(row) = rows.next()? {
+        let size = u64::try_from(row.get::<_, i64>(0)?).map_err(|_| Error::RecoveryFailed)?;
+        let mime: String = row.get(1)?;
+        let path: Option<String> = row.get(2)?;
+        let bytes = match media_kind(&mime, path.as_deref()) {
+            MediaKind::Image => &mut usage.image_bytes,
+            MediaKind::Video => &mut usage.video_bytes,
+            MediaKind::Other => &mut usage.other_bytes,
+        };
+        *bytes = bytes.checked_add(size).ok_or(Error::RecoveryFailed)?;
+    }
+    Ok(usage)
 }
 
 pub(super) fn usage(db: &Connection, guard: &Guard<'_>) -> Result<Usage> {
@@ -23,15 +96,12 @@ pub(super) fn usage(db: &Connection, guard: &Guard<'_>) -> Result<Usage> {
 }
 
 fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: i64) -> Result<Usage> {
-    let used: i64 = db.query_row(
-        "SELECT COALESCE(SUM(a.size),0) FROM records r
-         JOIN json_each(r.fields_json) f
-         JOIN assets a ON a.namespace_id=r.namespace_id
-             AND a.asset_id=json_extract(f.value,'$.value.assetId')
-         WHERE r.namespace_id=1 AND r.deleted=0 AND json_extract(f.value,'$.type')='ASSETID'",
-        [],
-        |row| row.get(0),
-    )?;
+    let media_usage = logical_usage(db)?;
+    let used_bytes = media_usage
+        .image_bytes
+        .checked_add(media_usage.video_bytes)
+        .and_then(|bytes| bytes.checked_add(media_usage.other_bytes))
+        .ok_or(Error::RecoveryFailed)?;
     // A replaced/expired lease cannot publish. Do not let abandoned reservations
     // block the new holder, even before periodic session maintenance runs.
     let reserved: i64 = db.query_row(
@@ -50,7 +120,6 @@ fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: i64) -> Res
         params![now_ms, tick_ms],
         |row| row.get(0),
     )?;
-    let used_bytes = u64::try_from(used).map_err(|_| Error::RecoveryFailed)?;
     let reserved_bytes = u64::try_from(reserved).map_err(|_| Error::RecoveryFailed)?;
     Ok(Usage {
         quota_bytes,
@@ -59,6 +128,7 @@ fn usage_at(db: &Connection, quota_bytes: u64, now_ms: i64, tick_ms: i64) -> Res
         available_bytes: quota_bytes
             .saturating_sub(used_bytes)
             .saturating_sub(reserved_bytes),
+        media_usage,
     })
 }
 
@@ -147,6 +217,32 @@ mod tests {
         tokens::TokenCodec,
     };
     use serde_json::json;
+
+    #[test]
+    fn media_kind_uses_trusted_original_mime_then_case_insensitive_path() {
+        for (mime, path, expected) in [
+            ("image/png", Some("movie.mp4"), MediaKind::Image),
+            ("video/mp4", Some("photo.png"), MediaKind::Video),
+            (
+                "application/octet-stream",
+                Some("clips/视频.MOV"),
+                MediaKind::Video,
+            ),
+            (
+                "application/octet-stream",
+                Some("pictures/raw.HEIC"),
+                MediaKind::Image,
+            ),
+            (
+                "application/octet-stream",
+                Some("data.bin"),
+                MediaKind::Other,
+            ),
+            ("application/octet-stream", None, MediaKind::Other),
+        ] {
+            assert_eq!(media_kind(mime, path), expected);
+        }
+    }
 
     #[test]
     fn lease_and_session_expiration_release_reservations_before_maintenance() {

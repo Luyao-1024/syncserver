@@ -25,7 +25,7 @@
 | `/internal/records/query/batch` | POST | 基本查询批次 | 不实现 Apple 的 HyperionIndexCountLookup 等私有计数索引 |
 | `/assets/upload` | POST | 分配上传 URL | Apple 加密/receipt 私有行为不支持，描述符见资源文档 |
 
-原生配额扩展：`GET /v1/storage` 返回当前账户 quotaBytes/usedBytes/reservedBytes/availableBytes；Bearer 认证、无须租约、不接受 query，按当前文件逻辑大小计量，上传预留及创建/复制/更新记录超额返回 409 `STORAGE_QUOTA_EXCEEDED`。`capabilities.storageQuota=true` 与 `limits.userStorageQuotaBytes` 表示能力和配置，见[配额契约](../contracts/storage-quota.md)。
+原生配额扩展：`GET /v1/storage` 返回当前账户 quotaBytes/usedBytes/reservedBytes/availableBytes 及 imageBytes/videoBytes/otherBytes；缩略图并入所属文件分类，三类之和等于 usedBytes；Bearer 认证、无须租约、不接受 query，按当前文件逻辑大小计量，上传预留及创建/复制/更新记录超额返回 409 `STORAGE_QUOTA_EXCEEDED`。`capabilities.storageQuota=true`、`capabilities.storageUsageByMediaType=true` 与 `limits.userStorageQuotaBytes` 表示能力和配置，见[配额契约](../contracts/storage-quota.md)。
 
 原生扩展：`GET /healthz`、`GET /readyz`、`GET /v1/capabilities`、受 Bearer 认证的 `GET /v1/metrics`（[运维指标契约](../contracts/metrics.md)）、`POST /v1/snapshots` 与固定的上传/资产路径。完整路径、JSON 与边界以[共享快照](../contracts/snapshots.md)、[照片记录](../contracts/photo-records.md)、[资源协议](../contracts/assets.md)为冻结契约。
 

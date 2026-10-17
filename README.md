@@ -100,8 +100,10 @@ Ctrl+C 或 SIGTERM 停止接收新操作，排空数据库队列，登记正常�
 使用当前账户登录得到的 Bearer 查询 `GET /v1/storage`（无参数、无须上行租约）：
 
 ```json
-{"quotaBytes":20000000000,"usedBytes":1000,"reservedBytes":2000,"availableBytes":19999997000}
+{"quotaBytes":20000000000,"usedBytes":1000,"reservedBytes":2000,"availableBytes":19999997000,"imageBytes":400,"videoBytes":600,"otherBytes":0}
 ```
+
+`imageBytes`、`videoBytes` 分别返回图片和视频占用，缩略图计入所属图片或视频；`otherBytes` 为其他/无法识别的占用，三类之和等于 `usedBytes`，不单列缩略图。分类优先使用服务端原始资源 MIME，未知时按虚拟文件路径扩展名判断，仅查询元数据。
 
 用户占用按当前未删除文件的逻辑资源大小计算：不同文件即使引用同一个去重对象，也分别计量；同一文件重复同步不重复计量。原图和缩略图均计入，历史版本及未引用对象不占用户配额。新上传预留逻辑增长，创建/复制/更新记录在事务内最终校验配额，超额返回 HTTP 409 `STORAGE_QUOTA_EXCEEDED`。删除文件立即释放逻辑空间，底层内容对象继续按现有历史保留规则管理。详见[计量与查询契约](docs/contracts/storage-quota.md)。
 

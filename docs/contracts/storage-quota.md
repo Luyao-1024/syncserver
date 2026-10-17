@@ -25,16 +25,22 @@
 
 ## 查询
 
-`GET /v1/storage`，Bearer 认证，无参数，无须上行租约。拒绝任何 query 参数；只返回当前账户的配额。响应 `Cache-Control: no-store`，所有字节字段为非负整数：
+`GET /v1/storage`，Bearer 认证，无参数，无须上行租约。拒绝任何 query 参数；只返回当前账户的配额。响应 `Cache-Control: no-store`，所有字节字段为非负整数；新增分类字段是已用逻辑空间的拆分，不包含 reservedBytes：
 
 ```json
-{"quotaBytes":20000000000,"usedBytes":1000,"reservedBytes":2000,"availableBytes":19999997000}
+{"quotaBytes":20000000000,"usedBytes":1000,"reservedBytes":2000,"availableBytes":19999997000,"imageBytes":400,"videoBytes":600,"otherBytes":0}
 ```
 
-查询在同一个数据库读事务中计算，沿用有界普通数据库队列。`GET /v1/capabilities` 增加 `capabilities.storageQuota=true`，`limits.userStorageQuotaBytes` 返回当前上限。使用量不放入零 SQL 的运维指标采样。
+`imageBytes` 为图片占用，`videoBytes` 为视频占用，`otherBytes` 为其他或无法识别的占用；始终满足 `imageBytes + videoBytes + otherBytes = usedBytes`。用户不感知独立缩略图占用，接口不提供 thumbnailBytes；同一文件的原始资源及缩略图、其他关联资源都计入该文件所属类别。共享缩略图按每份逻辑引用分别计入对应文件类别，不按物理对象只计一次。
+
+分类只读当前记录及可信资产元数据：原始资源 `resOriginalRes` 存在时，以它的服务端 MIME 为准，`image/*` 为图片、`video/*` 为视频；不能以 JPEG/PNG 缩略图的 MIME 将视频归入图片。原始 MIME 无法分类时，读取同 namespace/zone 的 photo_bindings.relative_path（或普通记录的 STRING relativePath）扩展名，忽略大小写。无原始资源字段的普通资源使用自身服务端 MIME 及记录路径。
+
+扩展名分类为本服务展示规则，不是上传内容合法性的保证，不信任请求 Content-Type 或客户端描述符来覆盖服务端 MIME。支持图片扩展名 jpg/jpeg/jpe/png/apng/gif/webp/bmp/dib/tif/tiff/heic/heif/avif/jxl/ico/svg/dng/cr2/cr3/nef/nrw/arw/srf/sr2/orf/rw2/raf/pef/srw；视频扩展名 mp4/m4v/mov/mkv/webm/avi/mpeg/mpg/m2v/m2ts/mts/ts/3gp/3g2/ogv/wmv/asf/flv/vob；未匹配归入 otherBytes。对 MIME 未知的文件重命名时，类别随当前扩展名变化，总逻辑占用不变；可信原始 MIME 优先于路径扩展名。历史及未引用对象仍不计量。
+
+查询在同一个数据库读事务中计算，沿用有界普通数据库队列。`GET /v1/capabilities` 增加 `capabilities.storageQuota=true`，`limits.userStorageQuotaBytes` 返回当前上限；新增 `capabilities.storageUsageByMediaType=true` 表示支持分类占用。使用量不放入零 SQL 的运维指标采样。
 
 ## 验收
 
-默认与配置边界；精确达到上限及超额；批量/并发申请无超售；幂等不重复计量；失败/过期/失锁和重启释放预留；相同内容的独立文件重复计量；复用资源不能绕过记录事务配额；删除释放逻辑空间；同大小更新/缩小与降低上限保留下载；不同用户相同内容独立计量；无认证及指定其他用户被拒绝；查询不改变同步 token、不读取正文。
+默认与配置边界；精确达到上限及超额；批量/并发申请无超售；幂等不重复计量；失败/过期/失锁和重启释放预留；相同内容的独立文件重复计量；复用资源不能绕过记录事务配额；删除释放逻辑空间；同大小更新/缩小与降低上限保留下载；不同用户相同内容独立计量；无认证及指定其他用户被拒绝；查询不改变同步 token、不读取正文；图片/视频/未知资源混合计量，缩略图归属和共享引用、重命名/删除、重启、账户隔离及分类之和等于 usedBytes。
 
 关联：[资源协议](assets.md)、[认证](authentication.md)、[兼容矩阵](../design/protocol-compatibility.md)、[恢复](../design/concurrency-recovery.md)。

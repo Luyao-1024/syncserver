@@ -112,3 +112,6 @@ C1 的 dirty 是本地既有同步记录上的字段，另有本地变更版本�
 ## 用户资源空间计量
 
 [空间配额](../contracts/storage-quota.md)复用 schema v5 的当前 `records.fields_json/deleted`、可信 `assets.size`、`upload_sessions` 与 `upload_lease`，不新增持久计数器或修改 generation。每用户全部 zone 共享上限；当前未删除记录的每个 ASSETID 字段按资产大小分别计量，不同文件引用相同 AssetId 也累加，历史/墓碑/未引用对象不计入。有效未完成上传仅预留相对当前字段的正增长。对象发布不直接增加已用；记录事务以最终逻辑占用检查增长，超额回滚投影、版本、变化及成功 receipt。删除立即释放逻辑配额，物理对象仍保留。
+
+
+空间分类查询把当前 ASSETID 引用与同账户资产元数据、同 zone 的 photo_bindings 关联，原始资源 MIME 优先，无法分类时按当前虚拟路径扩展名划分图片/视频/其他。缩略图及关联资源跟随文件原始资源的分类；同一缩略图的多个引用各计入对应文件类别。三个分类大小之和为逻辑已用，不新增 schema、持久计数器或正文扫描。具体字段与扩展名规则见[配额查询契约](../contracts/storage-quota.md)。

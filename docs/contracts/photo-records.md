@@ -60,6 +60,10 @@ ASSETID 写入描述符含 AssetId 与服务端 receipt，并带 size、fileChec
 
 photo_bindings 必须有唯一键 `(namespace,zone,photo_id)` 和 `(namespace,zone,master_record_name)`，并校验两侧活跃记录和资源。历史版本保留旧资源组合，不用当前绑定反向重写历史。
 
+## 空间分类归属
+
+[空间查询](storage-quota.md)将 CPLMaster 的原始资源及缩略图作为同一逻辑文件的占用，分类取原始资源的可信 MIME，未知时读取 photo_bindings 对应 CPLAsset 的 relativePath 扩展名。视频使用 JPEG/PNG 缩略图时，缩略图字节仍归入 videoBytes；图片的归入 imageBytes，未知文件的归入 otherBytes。同一缩略图被多个文件引用时按每份逻辑引用分别计量，用户无须感知独立缩略图分类。
+
 ## 验收
 
 创建/删除顺序；孤儿/跨 zone；不同 revision 并发；非 atomic 拆对；重复路径；退休名称；metadata-only 不增加资源；相同资产跨 generation 去重；共享资产删除后其他照片仍可下载。
