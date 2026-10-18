@@ -54,28 +54,39 @@ pub(super) async fn result(state: &AppState, request: Control) -> Response {
     match state.store.control(request).await {
         Ok(result) => {
             let error_code = result.body.get("serverErrorCode").and_then(Value::as_str);
+            // Ownership of the uplink belongs to one account; without this an operator
+            // cannot tell whose round stopped.
+            let account = state
+                .user
+                .as_ref()
+                .map(|user| user.id.as_str())
+                .unwrap_or("");
             match error_code {
                 // Losing exclusive uplink ownership is an operational event, not merely
                 // a rejected request: a whole client round stops here.
                 Some("UPLOAD_LEASE_LOST") | Some("UPLOAD_PHASE_MISMATCH") => {
                     tracing::warn!(
+                        user_id = account,
                         lease_operation = operation,
                         error_code,
                         "upload lease ownership ended for this round"
                     )
                 }
                 Some(code) => tracing::debug!(
+                    user_id = account,
                     lease_operation = operation,
                     error_code = code,
                     status = result.status,
                     "upload lease control rejected"
                 ),
                 None if matches!(operation, "acquire" | "release") => tracing::info!(
+                    user_id = account,
                     lease_operation = operation,
                     status = result.status,
                     "upload lease ownership changed"
                 ),
                 None => tracing::debug!(
+                    user_id = account,
                     lease_operation = operation,
                     status = result.status,
                     "upload lease control completed"

@@ -758,13 +758,15 @@ pub(super) async fn set_enabled(
     no_store(response)
 }
 
-/// Tail of the deployment's own log database, for the console's operations view.
+/// Queries the deployment's own log database, for the console's operations view.
 ///
-/// This reads the same redacted records the `syncserver logs` command prints. It
-/// opens the log database read-only and takes no data directory lock, so it works
-/// while the service is running and cannot slow the logging pipeline down. Passwords,
-/// bearer tokens and capability URLs are already redacted before a record is
-/// persisted, so nothing that reaches this endpoint needs masking again.
+/// This reads the same redacted records the `syncserver logs` command prints and
+/// accepts the same filters, so an operator can ask a question in the browser that
+/// they would otherwise answer from a shell. It opens the log database read-only and
+/// takes no data directory lock, so it works while the service is running and cannot
+/// slow the logging pipeline down. Passwords, bearer tokens and capability URLs are
+/// already redacted before a record is persisted, so nothing that reaches this
+/// endpoint needs masking again.
 pub(super) async fn logs(
     State(root): State<Arc<AppState>>,
     Extension(state): Extension<Arc<AppState>>,
@@ -773,7 +775,19 @@ pub(super) async fn logs(
     let Some(_actor) = require_admin(&state) else {
         return denied();
     };
-    let params = match parameters(&request, &["level", "since", "until", "contains", "limit"]) {
+    let params = match parameters(
+        &request,
+        &[
+            "level",
+            "since",
+            "until",
+            "contains",
+            "limit",
+            "requestId",
+            "user",
+            "archive",
+        ],
+    ) {
         Ok(params) => params,
         Err(error) => return error.into_response(),
     };
@@ -792,13 +806,42 @@ pub(super) async fn logs(
             .filter(|level| !level.is_empty())
             .collect(),
     };
-    // Bounded so one request cannot scan an unbounded window.
-    let since_ms = params.get("since").and_then(|raw| raw.parse::<i64>().ok());
-    let until_ms = params.get("until").and_then(|raw| raw.parse::<i64>().ok());
+    // Bounded so one request cannot scan an unbounded window. Both bounds are epoch
+    // milliseconds, and a malformed one is rejected rather than dropped: a filter that
+    // silently does nothing is worse than one that reports that it is malformed.
+    let (Ok(since_ms), Ok(until_ms)) = (
+        epoch_millis(params.get("since")),
+        epoch_millis(params.get("until")),
+    ) else {
+        return ApiError::bad_request().into_response();
+    };
     let contains = params
         .get("contains")
         .filter(|value| !value.is_empty())
         .cloned();
+    let request_id = params
+        .get("requestId")
+        .filter(|value| !value.is_empty())
+        .cloned();
+    // An account is chosen from the console's account list, so it is always a real
+    // UUID there. Anything else is a mistake worth reporting rather than a filter that
+    // quietly matches nothing.
+    let user_id = match params.get("user").map(|value| value.trim()) {
+        None | Some("") => None,
+        Some(raw) => match uuid::Uuid::parse_str(raw) {
+            Ok(id) => Some(id.to_string()),
+            Err(_) => return ApiError::bad_request().into_response(),
+        },
+    };
+    // Reading the compressed archive is the default because that is where anything
+    // older than the retention threshold lives. The cost is real, so a caller that
+    // only wants the live window can turn it off.
+    let include_archive = match params.get("archive").map(String::as_str) {
+        None => true,
+        Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        Some(_) => return ApiError::bad_request().into_response(),
+    };
     let path = root.config.data_dir.join(crate::logging::LOG_DATABASE);
     let persisted = path.exists();
 
@@ -815,9 +858,10 @@ pub(super) async fn logs(
                 since_ms,
                 until_ms,
                 contains,
-                request_id: None,
+                request_id,
+                user_id,
                 limit,
-                include_archive: false,
+                include_archive,
             },
         )
     })
@@ -840,8 +884,34 @@ pub(super) async fn logs(
                 "message": record.message,
                 "fields": record.fields,
                 "requestId": record.request_id,
+                "userId": record.user_id,
             })
         })
         .collect();
-    no_store(Json(json!({"logs": entries, "persisted": persisted})).into_response())
+    // A full page only says the caller may be missing rows. Counting the matches
+    // would mean a second scan — and a full one whenever `contains` is present,
+    // because the substring match has no index — so the honest signal is "this may
+    // not be everything" rather than a number that costs a scan to produce.
+    let truncated = records.len() >= limit;
+    no_store(
+        Json(json!({
+            "logs": entries,
+            "persisted": persisted,
+            "truncated": truncated,
+        }))
+        .into_response(),
+    )
+}
+
+/// An optional epoch-millisecond bound. Absent or empty means unbounded; anything
+/// else has to parse into a non-negative instant, so a typo is reported instead of
+/// quietly widening the window to everything.
+fn epoch_millis(raw: Option<&String>) -> std::result::Result<Option<i64>, ()> {
+    match raw.map(|value| value.trim()) {
+        None | Some("") => Ok(None),
+        Some(value) => match value.parse::<i64>() {
+            Ok(parsed) if parsed >= 0 => Ok(Some(parsed)),
+            _ => Err(()),
+        },
+    }
 }

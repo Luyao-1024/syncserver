@@ -293,3 +293,174 @@ async fn production_profile_keeps_info_level_and_suppresses_library_data() {
         "username leaked in production"
     );
 }
+
+/// Runs a real server in account mode, so a request can be authenticated as an account
+/// rather than with the legacy key.
+///
+/// This is the only test that can prove the middleware wiring is right. Everything else
+/// exercises storage or the query, and all of them would still pass if `request
+/// completed` were emitted without ever learning who made the request.
+async fn start_with_account(root: &Path) -> (Instance, String) {
+    // The same key material the other profiles use. Only the signing key matters here:
+    // an account deployment omits the API key entirely.
+    write_keys(root);
+    fs::remove_file(root.join("api.key")).unwrap();
+    // The account has to exist before the server starts: the CLI needs the data
+    // directory lock, and the running service holds it.
+    let created = Command::new(env!("CARGO_BIN_EXE_syncserver"))
+        .env_clear()
+        .env("SYNC_DATA_DIR", root.join("data"))
+        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
+        .args(["users", "create", "photoviewer", "--password-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut child = created;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(format!("{PASSWORD}\n").as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "account creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let address = {
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        socket.local_addr().unwrap().to_string()
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_syncserver"))
+        .env_clear()
+        .env("SYNC_BIND", &address)
+        .env("SYNC_DATA_DIR", root.join("data"))
+        .env("SYNC_PUBLIC_BASE_URL", format!("http://{address}"))
+        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
+        .env("SYNC_LOG_LEVEL", "info")
+        .env("SYNC_LOG_PERSIST_LEVEL", "info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let base = format!("http://{address}");
+    let client = reqwest::Client::new();
+    let token = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "server terminated before ready"
+            );
+            if let Ok(response) = client
+                .post(format!("{base}/v1/auth/login"))
+                .json(&json!({"username": "photoviewer", "password": PASSWORD}))
+                .send()
+                .await
+                && response.status() == 200
+            {
+                let body: Value = response.json().await.unwrap();
+                return body["accessToken"].as_str().unwrap().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    (Instance { child, base }, token)
+}
+
+#[tokio::test]
+async fn an_authenticated_request_is_attributed_to_its_account() {
+    let root = tempfile::tempdir().unwrap();
+    let (instance, token) = start_with_account(root.path()).await;
+    let client = reqwest::Client::new();
+
+    // A real session, then a real metadata read made with it.
+    let response = client
+        .post(format!(
+            "{}/database/1/com.apple.photos.cloud/production/private/records/query",
+            instance.base
+        ))
+        .bearer_auth(&token)
+        .json(&json!({"query":{"recordType":"Album"},"resultsLimit":5}))
+        .send()
+        .await
+        .unwrap();
+    let request_id = response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .to_owned();
+    assert_eq!(response.status().as_u16(), 200);
+
+    // An unauthenticated request to the same endpoint, as a control.
+    let anonymous = client
+        .post(format!(
+            "{}/database/1/com.apple.photos.cloud/production/private/records/query",
+            instance.base
+        ))
+        .json(&json!({"query":{"recordType":"Album"},"resultsLimit":5}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status().as_u16(), 401);
+
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    stop(instance);
+
+    let rows = read_logs(&root.path().join("data"), &[]);
+    let issued = find(&rows, "session issued").expect("a session was issued");
+    let account = issued["user_id"]
+        .as_str()
+        .expect("the session record names its account")
+        .to_owned();
+
+    let completed = rows
+        .iter()
+        .find(|row| {
+            row["message"] == "request completed" && row["request_id"] == request_id.as_str()
+        })
+        .expect("the authenticated request is logged");
+    assert_eq!(
+        completed["user_id"].as_str(),
+        Some(account.as_str()),
+        "the request record names the same account the session did"
+    );
+
+    // The 401 went through the same middleware and the same code path, so it must be
+    // recorded — attributed to nobody, which is what a rejected request is.
+    let rejected = rows
+        .iter()
+        .find(|row| row["message"] == "request completed" && row["fields"]["status"] == 401)
+        .expect("a rejected request is still logged");
+    assert!(
+        rejected.get("user_id").is_none_or(Value::is_null),
+        "a request that never authenticated is attributed to no one: {rejected}"
+    );
+
+    // And the operator-facing filter agrees with what the records say.
+    let mine = read_logs(&root.path().join("data"), &["--user", &account]);
+    assert!(
+        mine.iter().all(|row| row["user_id"] == account.as_str()),
+        "filtering by account returns only that account"
+    );
+    assert!(!mine.is_empty());
+    assert!(
+        mine.iter()
+            .any(|row| row["request_id"] == request_id.as_str()),
+        "the authenticated request is among them"
+    );
+    let others = read_logs(
+        &root.path().join("data"),
+        &["--user", "00000000-0000-4000-8000-000000000000"],
+    );
+    assert!(others.is_empty(), "an account nobody has matches nothing");
+}

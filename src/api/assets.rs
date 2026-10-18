@@ -382,6 +382,9 @@ async fn finish_upload(
     match reply {
         AssetReply::Json(value) => {
             tracing::info!(
+                // The account is what makes this attributable: the asset id alone says
+                // which object, not whose library it landed in.
+                user_id = state.user.as_ref().map(|user| user.id.as_str()).unwrap_or(""),
                 upload_id = %session_id,
                 asset_id = %asset_id,
                 asset_role = claims.role.as_str(),

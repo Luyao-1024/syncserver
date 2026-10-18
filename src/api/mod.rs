@@ -23,7 +23,7 @@ use error::ApiError;
 use serde_json::{Value, json};
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -311,6 +311,30 @@ fn route_shape(path: &str) -> String {
     }
 }
 
+/// The account a request was authenticated as, carried back out of [`authenticate`].
+///
+/// `response_metadata` is the outermost layer, so it runs *before* the session is
+/// resolved and cannot see the user directly — yet the `request completed` record it
+/// writes is the one line an operator reads per request. This is a per-request cell,
+/// not shared state: two concurrent requests never write to the same slot.
+#[derive(Clone)]
+struct ActingUser(Arc<OnceLock<String>>);
+
+impl ActingUser {
+    fn new() -> Self {
+        Self(Arc::new(OnceLock::new()))
+    }
+
+    fn note(&self, id: &str) {
+        // The first writer wins. Only `authenticate` writes, and it writes once.
+        let _ = self.0.set(id.to_owned());
+    }
+
+    fn id(&self) -> Option<&str> {
+        self.0.get().map(String::as_str)
+    }
+}
+
 async fn response_metadata(
     State(state): State<Arc<AppState>>,
     request: Request,
@@ -329,6 +353,9 @@ async fn response_metadata(
         .get::<axum::extract::MatchedPath>()
         .map(|path| path.as_str().to_owned());
     let method = request.method().as_str().to_owned();
+    let mut request = request;
+    let acting_user = ActingUser::new();
+    request.extensions_mut().insert(acting_user.clone());
     let mut response = next
         .run(request)
         .instrument(tracing::info_span!(
@@ -369,6 +396,9 @@ async fn response_metadata(
         status,
         duration_ms,
         error_code,
+        // Absent for a capability download and for anything that never reached
+        // authentication; the field is skipped rather than logged empty.
+        user_id = acting_user.id().unwrap_or(""),
         "request completed"
     );
     // Responses are private and live by default. A handler that deliberately set a
@@ -449,8 +479,12 @@ async fn authenticate(
     let Some(state) = selected else {
         return denied();
     };
-    if state.user.is_some() {
+    if let Some(user) = &state.user {
         state.requests.fetch_add(1, Ordering::Relaxed);
+        // Handed to `response_metadata`, which cannot see the resolved session itself.
+        if let Some(acting_user) = request.extensions().get::<ActingUser>() {
+            acting_user.note(&user.id);
+        }
     }
     request.extensions_mut().insert(state.clone());
     let monitoring = request.uri().path() == "/v1/metrics";

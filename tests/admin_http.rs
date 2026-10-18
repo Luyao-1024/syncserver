@@ -902,3 +902,71 @@ async fn the_history_window_picks_a_resolution_that_matches_its_span() {
     let (_, body) = admin_get(&deployment, "/v1/admin/overview").await;
     assert_eq!(body["http"]["window"], "15m");
 }
+
+#[tokio::test]
+async fn the_log_search_validates_its_filters_and_reports_an_unpersisted_deployment() {
+    let (_root, deployment) = start(
+        &[
+            ("admin1", Role::Admin, PASSWORD),
+            ("bob", Role::User, OTHER),
+        ],
+        "20000000000",
+    )
+    .await;
+
+    // A filter the reader typed has to either work or be refused. Dropping a
+    // malformed bound and answering with everything looks exactly like a working
+    // search that found nothing, which is the failure this endpoint used to have.
+    for bad in [
+        "/v1/admin/logs?limit=0",
+        "/v1/admin/logs?limit=1001",
+        "/v1/admin/logs?since=yesterday",
+        "/v1/admin/logs?until=abc",
+        "/v1/admin/logs?since=-1",
+        "/v1/admin/logs?archive=maybe",
+        "/v1/admin/logs?colour=blue",
+        "/v1/admin/logs?user=demo",
+        "/v1/admin/logs?user=not-a-uuid",
+        "/v1/admin/logs?user=12345",
+    ] {
+        let (status, _) = admin_get(&deployment, bad).await;
+        assert_eq!(status, 400, "{bad} should be refused");
+    }
+
+    // Every filter the console offers has to be accepted, including the ones that
+    // are new here: the compressed archive and a pinned request.
+    for good in [
+        "/v1/admin/logs",
+        "/v1/admin/logs?limit=1",
+        "/v1/admin/logs?limit=1000",
+        "/v1/admin/logs?level=WARN,ERROR",
+        "/v1/admin/logs?contains=lease&archive=false",
+        "/v1/admin/logs?requestId=not-a-real-id",
+        "/v1/admin/logs?since=0&until=99999999999999&archive=true",
+        "/v1/admin/logs?user=c094d2a8-dfc0-418b-ab28-76f658cb7a7d",
+        "/v1/admin/logs?user=c094d2a8-dfc0-418b-ab28-76f658cb7a7d&archive=true&limit=50",
+    ] {
+        let (status, body) = admin_get(&deployment, good).await;
+        assert_eq!(status, 200, "{good}: {body}");
+        assert!(body["logs"].is_array(), "{good}");
+        assert!(body["truncated"].is_boolean(), "{good}");
+    }
+
+    // An ordinary account cannot read the log database either.
+    let (status, body) = user_get(&deployment, "/v1/admin/logs").await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["serverErrorCode"], "ADMIN_REQUIRED");
+    let (status, _) = get("", &deployment, "/v1/admin/logs").await;
+    assert_eq!(status, 401);
+
+    // This harness serves the library in process, and only the binary installs the
+    // logging pipeline, so there is no log database to read. The endpoint has to say
+    // so, rather than answering with an empty list that looks like a quiet server.
+    // What the filters do to real records is covered against the database itself in
+    // tests/logging.rs.
+    let (status, body) = admin_get(&deployment, "/v1/admin/logs").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["persisted"], false, "{body}");
+    assert_eq!(body["logs"].as_array().map(Vec::len), Some(0));
+    assert_eq!(body["truncated"], false, "an empty page is not a full one");
+}

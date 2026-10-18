@@ -21,7 +21,7 @@ use std::{
 /// Log storage sits beside the metadata database in its own file: operational logging
 /// never joins sync transactions, and the metadata schema stays at its current version.
 pub const LOG_DATABASE: &str = "logs.sqlite";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 /// Records commit in batches, so a short interval bounds how long a record stays buffered.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(1000);
 const FLUSH_MAX_ROWS: usize = 512;
@@ -39,11 +39,13 @@ CREATE TABLE log_events (
     target TEXT NOT NULL,
     message TEXT NOT NULL,
     fields TEXT NOT NULL CHECK (json_valid(fields)),
-    request_id TEXT
+    request_id TEXT,
+    user_id TEXT
 ) STRICT;
 CREATE INDEX log_events_ts ON log_events(ts_ms, seq);
 CREATE INDEX log_events_level ON log_events(level, seq);
 CREATE INDEX log_events_request ON log_events(request_id, seq);
+CREATE INDEX log_events_user ON log_events(user_id, seq);
 CREATE TABLE log_segments (
     segment_id INTEGER PRIMARY KEY AUTOINCREMENT,
     first_seq INTEGER NOT NULL,
@@ -59,6 +61,17 @@ CREATE TABLE log_segments (
     payload BLOB NOT NULL
 ) STRICT;
 CREATE INDEX log_segments_time ON log_segments(first_ts_ms, segment_id);
+";
+
+/// Lifts a database written at version 1 to the current one.
+///
+/// Added in a single transaction because SQLite's DDL is transactional: either the
+/// column and its index both land or neither does, so a database is never left at a
+/// version that the open path would reject. `ADD COLUMN` rewrites no rows, so this is
+/// the same cost against a 30,000-record window as against an empty one.
+const MIGRATE_1_TO_2: &str = "
+ALTER TABLE log_events ADD COLUMN user_id TEXT;
+CREATE INDEX log_events_user ON log_events(user_id, seq);
 ";
 
 type Reply = mpsc::Sender<Result<()>>;
@@ -428,6 +441,9 @@ impl Session {
             if tables != 3 {
                 return Err(Error::SchemaUnsupported);
             }
+            if version < SCHEMA_VERSION {
+                migrate(&connection, version)?;
+            }
             store_setting(&connection, "retention_raw_secs", settings)?;
             store_setting(&connection, "archive_max_bytes", settings)?;
         }
@@ -441,8 +457,8 @@ impl Session {
         let mut rows = 0;
         {
             let mut statement = tx.prepare(
-                "INSERT INTO log_events (ts_ms, level, target, message, fields, request_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO log_events (ts_ms, level, target, message, fields, request_id, user_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for record in batch.iter() {
                 let fields =
@@ -453,7 +469,8 @@ impl Session {
                     record.target,
                     record.message,
                     fields,
-                    record.request_id
+                    record.request_id,
+                    record.user_id
                 ])?;
             }
         }
@@ -585,7 +602,7 @@ impl Session {
 
     fn older_than(&self, cutoff: i64) -> Result<Vec<StoredRecord>> {
         let mut statement = self.connection.prepare(
-            "SELECT seq, ts_ms, level, target, message, fields, request_id FROM log_events
+            "SELECT seq, ts_ms, level, target, message, fields, request_id, user_id FROM log_events
              WHERE ts_ms < ?1 ORDER BY seq LIMIT ?2",
         )?;
         let rows = statement.query_map(params![cutoff, ARCHIVE_BATCH_ROWS as i64], read_row)?;
@@ -641,6 +658,24 @@ impl Session {
     }
 }
 
+/// Brings an older log database up to [`SCHEMA_VERSION`] in one transaction.
+///
+/// Steps are applied in order and only those the database has not yet seen, so an
+/// interrupted upgrade resumes where it stopped rather than failing on a column that
+/// is already there.
+fn migrate(connection: &Connection, from: i64) -> Result<()> {
+    if from >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    let tx = connection.unchecked_transaction()?;
+    if from < 2 {
+        tx.execute_batch(MIGRATE_1_TO_2)?;
+    }
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn store_setting(connection: &Connection, key: &str, settings: &LogSettings) -> Result<()> {
     let value = match key {
         "retention_raw_secs" => settings.retention_raw_secs.to_string(),
@@ -665,6 +700,7 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRecord> {
             message: row.get(4)?,
             fields: serde_json::from_str(&fields).unwrap_or_default(),
             request_id: row.get(6)?,
+            user_id: row.get(7)?,
         },
     })
 }
@@ -678,6 +714,10 @@ pub struct LogFilter {
     pub until_ms: Option<i64>,
     pub contains: Option<String>,
     pub request_id: Option<String>,
+    /// The account a record belongs to. Like `request_id` this is exact, not a
+    /// substring: an operator asks about one account, not about text that looks like
+    /// one.
+    pub user_id: Option<String>,
     pub limit: usize,
     /// Include gzip segments as well as the uncompressed window.
     pub include_archive: bool,
@@ -698,6 +738,16 @@ impl LogFilter {
             .request_id
             .as_ref()
             .is_some_and(|want| Some(want) != row.record.request_id.as_ref())
+        {
+            return false;
+        }
+        // Archive rows never reach the SQL above, so without this a search by account
+        // would stop dead at the compression boundary — exactly where an operator
+        // looking for last week's activity lands.
+        if self
+            .user_id
+            .as_ref()
+            .is_some_and(|want| Some(want) != row.record.user_id.as_ref())
         {
             return false;
         }
@@ -736,7 +786,7 @@ pub fn query(path: &Path, filter: &LogFilter) -> Result<Vec<StoredRecord>> {
     )?;
     let limit = if filter.limit == 0 { 500 } else { filter.limit };
     let mut sql = String::from(
-        "SELECT seq, ts_ms, level, target, message, fields, request_id FROM log_events WHERE 1",
+        "SELECT seq, ts_ms, level, target, message, fields, request_id, user_id FROM log_events WHERE 1",
     );
     let mut arguments: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     if let Some(since) = filter.since_ms {
@@ -759,6 +809,10 @@ pub fn query(path: &Path, filter: &LogFilter) -> Result<Vec<StoredRecord>> {
     if let Some(request_id) = &filter.request_id {
         sql.push_str(" AND request_id=?");
         arguments.push(Box::new(request_id.clone()));
+    }
+    if let Some(user_id) = &filter.user_id {
+        sql.push_str(" AND user_id=?");
+        arguments.push(Box::new(user_id.clone()));
     }
     if let Some(needle) = &filter.contains {
         sql.push_str(" AND (message LIKE '%' || ? || '%' ESCAPE '\\' OR fields LIKE '%' || ? || '%' ESCAPE '\\')");

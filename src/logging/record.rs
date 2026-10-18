@@ -17,6 +17,14 @@ pub struct LogRecord {
     pub fields: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// The account the record belongs to, when the request was authenticated as one.
+    ///
+    /// Not redacted and not a library-content field: it is the operator's only way to
+    /// answer "what did this account do", and it names no photo. `request_id` has the
+    /// same optional shape so archive segments written before this field existed read
+    /// back as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 /// Archive line: the record together with its original sequence number.
@@ -127,6 +135,7 @@ pub(crate) struct Collector {
     pub message: String,
     pub fields: Map<String, Value>,
     pub request_id: Option<String>,
+    pub user_id: Option<String>,
     payload_detail: bool,
 }
 
@@ -136,6 +145,7 @@ impl Collector {
             message: String::new(),
             fields: Map::new(),
             request_id: None,
+            user_id: None,
             payload_detail,
         }
     }
@@ -146,10 +156,26 @@ impl Collector {
             self.message = clip(&text_of(&value));
             return;
         }
+        // Lifted ahead of the redaction rules on purpose. An account id is an operator
+        // handle, not library content, and searching logs by account has to keep
+        // working with `SYNC_LOG_PAYLOAD` off — which is the production default. Lifting
+        // it here makes that a property of this code rather than of the fragment lists.
         if lowered == "request_id" || lowered == "requestid" {
             let text = clip(&text_of(&value));
             self.request_id = Some(text.clone());
             self.fields.insert(name.to_owned(), Value::String(text));
+            return;
+        }
+        if lowered == "user_id" || lowered == "userid" {
+            let text = clip(&text_of(&value));
+            // An empty value means "this request had no account", which is what a
+            // capability download or a pre-authentication failure looks like. Storing
+            // "" would put an indexed blank on every such record and make it match a
+            // search for the empty account.
+            if !text.is_empty() {
+                self.user_id = Some(text.clone());
+                self.fields.insert(name.to_owned(), Value::String(text));
+            }
             return;
         }
         let stored = if is_secret(&lowered) {

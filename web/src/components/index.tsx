@@ -303,6 +303,16 @@ export function Drawer({
   onClose: () => void
   children: ReactNode
 }) {
+  // Same dismissal Modal offers: a side panel the reader opened should close the
+  // way they expect rather than only by hunting for the button.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
     <div className="drawer-wrap" onClick={onClose}>
       <aside
@@ -812,4 +822,52 @@ export function Meter({ label, value, total, color }: { label: string; value: nu
       </div>
     </div>
   )
+}
+
+/**
+ * Case-insensitive ranges of `term` inside `text`, left to right and non-overlapping.
+ *
+ * Shared by {@link Highlight} and {@link countMatches} so a reader is never shown
+ * "3 matches" above a list that highlights a different number.
+ */
+function matchRanges(text: string, term: string): [number, number][] {
+  const needle = term.trim().toLowerCase()
+  if (!needle) return []
+  const haystack = text.toLowerCase()
+  const ranges: [number, number][] = []
+  // Resuming after the needle rather than after one character keeps this linear and
+  // stops a term like "aa" from being matched inside its own match forever.
+  for (
+    let at = haystack.indexOf(needle);
+    at !== -1;
+    at = haystack.indexOf(needle, at + needle.length)
+  ) {
+    ranges.push([at, at + needle.length])
+  }
+  return ranges
+}
+
+/** How many times `term` occurs in `text`, for counters and match navigation. */
+export function countMatches(text: string, term: string): number {
+  return matchRanges(text, term).length
+}
+
+/**
+ * Renders `text` with every occurrence of `term` marked.
+ *
+ * The console never builds HTML from data, so the matches are returned as nodes
+ * rather than injected markup.
+ */
+export function Highlight({ text, term }: { text: string; term: string }) {
+  const ranges = matchRanges(text, term)
+  if (ranges.length === 0) return <>{text}</>
+  const nodes: ReactNode[] = []
+  let at = 0
+  ranges.forEach(([start, end], index) => {
+    if (start > at) nodes.push(text.slice(at, start))
+    nodes.push(<mark key={index}>{text.slice(start, end)}</mark>)
+    at = end
+  })
+  if (at < text.length) nodes.push(text.slice(at))
+  return <>{nodes}</>
 }

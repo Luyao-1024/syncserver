@@ -72,6 +72,14 @@ pub(super) async fn read(state: &AppState, operation: &str, value: Value) -> Res
             // Metadata polling is the highest-frequency path in the service, so reads
             // stay at debug and only mutations or failures reach info and above.
             tracing::debug!(
+                // Debug, so it is not persisted unless the deployment lowers
+                // `SYNC_LOG_PERSIST_LEVEL`. Attributed all the same, because an operator
+                // who has done that is asking exactly the same question.
+                user_id = state
+                    .user
+                    .as_ref()
+                    .map(|user| user.id.as_str())
+                    .unwrap_or(""),
                 metadata_operation = operation,
                 status = result.status,
                 returned_records = result

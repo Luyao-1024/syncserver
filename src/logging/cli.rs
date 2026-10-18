@@ -4,7 +4,7 @@ use super::{LOG_DATABASE, LogFilter, LogFormat, normalize_level, now_ms, query, 
 use crate::{Config, Error, Result};
 use std::io::{self, Write};
 
-const USAGE: &str = "usage: syncserver logs [--level LEVEL[,...]] [--since DURATION|EPOCH_MS] [--until DURATION|EPOCH_MS] [--contains TEXT] [--request-id ID] [--limit N] [--archive] [--json]";
+const USAGE: &str = "usage: syncserver logs [--level LEVEL[,...]] [--since DURATION|EPOCH_MS] [--until DURATION|EPOCH_MS] [--contains TEXT] [--request-id ID] [--user UUID] [--limit N] [--archive] [--json]";
 const DEFAULT_LIMIT: usize = 500;
 const MAX_LIMIT: usize = 100_000;
 
@@ -46,6 +46,14 @@ pub fn run(config: Config, args: &[String]) -> Result<()> {
             "--until" => filter.until_ms = Some(reference(&read_value()?)?),
             "--contains" => filter.contains = Some(read_value()?),
             "--request-id" => filter.request_id = Some(read_value()?),
+            "--user" | "--user-id" => {
+                let value = read_value()?;
+                filter.user_id = Some(
+                    uuid::Uuid::parse_str(&value)
+                        .map(|id| id.to_string())
+                        .map_err(|_| Error::Config("logs user must be an account UUID"))?,
+                );
+            }
             "--limit" => {
                 let value = read_value()?;
                 filter.limit = value

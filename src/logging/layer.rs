@@ -82,6 +82,7 @@ where
             message: collector.message,
             fields: collector.fields,
             request_id,
+            user_id: collector.user_id,
         };
         if self
             .console

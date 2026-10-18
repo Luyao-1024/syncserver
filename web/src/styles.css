@@ -34,6 +34,10 @@
   --danger: #e05656;
   --danger-quiet: rgba(224, 86, 86, 0.16);
 
+  /* Search hits. Distinct from --warn: a match is not a problem being reported. */
+  --highlight: #f2b544;
+  --highlight-quiet: rgba(242, 181, 68, 0.22);
+
   --radius-control: 8px;
   --radius-card: 12px;
   --radius-pill: 999px;
@@ -73,6 +77,9 @@
   --warn-quiet: rgba(176, 106, 18, 0.12);
   --danger: #c33a3a;
   --danger-quiet: rgba(195, 58, 58, 0.1);
+
+  --highlight: #9a6300;
+  --highlight-quiet: rgba(242, 181, 68, 0.38);
 
   --shadow-overlay: 0 12px 32px rgba(16, 18, 22, 0.12), 0 2px 8px rgba(16, 18, 22, 0.06);
 }
@@ -729,6 +736,83 @@ button {
   color: var(--text-faint);
 }
 
+/* A checkbox sitting inline with the segmented controls it modifies. */
+.toolbar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toolbar-check input {
+  accent-color: var(--accent);
+  margin: 0;
+  cursor: pointer;
+}
+
+.toolbar-note {
+  font-size: 12px;
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* An inline text action, for stepping between search hits. */
+.link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.link:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+/* What the last query returned, said plainly rather than left to be inferred. */
+.logs-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+/* Per-account totals over the loaded rows, collapsed by default so it never competes
+   with the log list it summarizes. */
+.account-summary {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+  padding: 8px 12px;
+}
+.account-summary > summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.account-summary > summary:hover {
+  color: var(--text);
+}
+.account-summary[open] > summary {
+  margin-bottom: 6px;
+}
+
 .chart-axis {
   display: flex;
   justify-content: space-between;
@@ -1364,23 +1448,47 @@ button {
   background: var(--surface-sunken);
 }
 
+/* A query result deserves more room than a live tail: the reader came to read it. */
+.logs.tall {
+  max-height: 70vh;
+}
+
 .log-line {
   display: grid;
-  grid-template-columns: 84px 52px minmax(0, 1fr) 62px;
+  grid-template-columns: 84px 52px 76px minmax(0, 1fr) 62px;
   gap: 10px;
   padding: 4px 12px;
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.65;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  cursor: pointer;
 }
 
 .log-line:last-child {
   border-bottom: none;
 }
 
+.log-line:hover {
+  background: var(--surface-hover);
+}
+
+/* The row the reader opened, and the row match navigation is standing on. */
+.log-line.on {
+  background: var(--accent-quiet);
+}
+
 .log-time {
   color: var(--text-faint);
+}
+
+/* Whose record this is. A username is a name, not a photo title, so it is shown as-is;
+   a raw id (account since deleted) keeps the column honest. */
+.log-user {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-level {
@@ -1401,6 +1509,37 @@ button {
 
 .log-level.DEBUG {
   color: var(--text-faint);
+}
+
+.log-level.TRACE {
+  color: var(--text-faint);
+}
+
+/* Search hits. The browser default is a block of yellow that fights the row it sits
+   in, and `mark` is used outside the log list too, so it is styled by context. */
+.logs mark,
+.kv mark,
+.log-json mark {
+  background: var(--highlight-quiet);
+  color: var(--highlight);
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+
+.log-json {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .log-route {

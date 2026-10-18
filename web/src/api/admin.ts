@@ -32,6 +32,34 @@ export interface AdminUser {
   readable: boolean
 }
 
+/**
+ * Health of the log pipeline, kept as in-process counters.
+ *
+ * Reading these never opens the log database, so the console can say how far back a
+ * search can reach without spending a query on finding out.
+ */
+export interface LoggingMetrics {
+  persistLevel: string
+  activated: boolean
+  queueDepth: number
+  queueCapacity: number
+  persisted: number
+  /** Newest records dropped when the queue was full. A gap the search cannot show. */
+  droppedQueueFull: number
+  droppedPending: number
+  writeFailures: number
+  /** Rows still uncompressed, and the oldest of them. The raw window is not capped. */
+  rawRows: number
+  oldestRawTsMs: number
+  /** Rows already compressed into segments. Segments are evicted oldest-first. */
+  archivedRows: number
+  archiveSegments: number
+  archiveBytes: number
+  archiveMaxBytes: number
+  trimmedSegments: number
+  lastArchiveTsMs: number
+}
+
 export interface Overview {
   service: string
   version: string
@@ -88,7 +116,7 @@ export interface Overview {
     httpAdmission: { capacity: number; active: number; controlCapacity: number; controlActive: number }
     transfers: Record<string, number>
     database: Record<string, number>
-    logging: Record<string, unknown>
+    logging: LoggingMetrics
   }
   accounts: {
     total: number
@@ -131,6 +159,63 @@ export interface Sample {
   serverErrors: number
 }
 
+/** One persisted log record, already redacted before it reached the database. */
+export interface LogEntry {
+  seq: number
+  tsMs: number
+  level: string
+  target: string
+  message: string
+  fields: Record<string, unknown>
+  requestId: string | null
+  /** The account the record belongs to, when the request was authenticated as one. */
+  userId: string | null
+}
+
+export interface LogPage {
+  logs: LogEntry[]
+  /** False when this deployment does not persist logs at all. */
+  persisted: boolean
+  /** The page came back full, so older matching records may exist beyond it. */
+  truncated: boolean
+}
+
+/** A search over the log database. Every field narrows; omitting one widens. */
+export interface LogQuery {
+  /** Comma-separated uppercase severities, as the endpoint accepts them. */
+  level?: string
+  contains?: string
+  requestId?: string
+  /** An account id: only that account's records. */
+  user?: string
+  /** Epoch milliseconds. The server rejects a malformed bound rather than ignoring it. */
+  sinceMs?: number
+  untilMs?: number
+  limit?: number
+  /** Read the compressed archive as well. Off while tailing: it re-inflates every poll. */
+  archive?: boolean
+}
+
+/** Drops the filters nobody set, so an empty search stays a bare request. */
+function logSearch(query: LogQuery): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries({
+    level: query.level,
+    contains: query.contains?.trim(),
+    requestId: query.requestId?.trim(),
+    user: query.user,
+    since: query.sinceMs,
+    until: query.untilMs,
+    limit: query.limit,
+    archive: query.archive,
+  })) {
+    if (value === undefined || value === null || value === '') continue
+    search.set(key, String(value))
+  }
+  const text = search.toString()
+  return text ? `?${text}` : ''
+}
+
 export type Window = '15m' | '1h' | '12h' | '1d' | '3d' | '7d'
 
 /** The windows offered, mirroring a hosting dashboard's range switcher. */
@@ -157,6 +242,9 @@ export const admin = {
       `/v1/admin/users/${encodeURIComponent(id)}/storage`,
       signal,
     ),
+
+  logs: (query: LogQuery, signal?: AbortSignal) =>
+    api.get<LogPage>(`/v1/admin/logs${logSearch(query)}`, signal),
 
   createUser: (username: string, password: string, asAdmin: boolean) =>
     api.post<{ user: { id: string; username: string; role: Role } }>('/v1/admin/users', {
