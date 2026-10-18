@@ -258,7 +258,7 @@ export function AdminOverviewPage() {
                   height={158}
                 />
                 <p className="field-hint" style={{ marginTop: 10 }}>
-                  两条线同刻度：整机是所有核心合计，本服务是其中一部分，多线程时可以超过 100%。
+                  两条线同一个刻度：100% 都是整机全部核心。本服务只是整机的一部分，永远不会高过上面的整机线。
                   负载 {data.host.loadAverage.oneMinute ?? '—'} /{' '}
                   {data.host.loadAverage.fiveMinutes ?? '—'} /{' '}
                   {data.host.loadAverage.fifteenMinutes ?? '—'}（1 / 5 / 15 分钟）。
@@ -329,12 +329,12 @@ export function AdminOverviewPage() {
                 action={<Readout value={pct(data.host.cpuPercent)} />}
               >
                 <dl className="kv">
-                  <dt>占整机</dt>
+                  <dt>占整机 CPU</dt>
                   <dd className="tnum">
                     {data.host.cpuPercent != null && data.host.systemCpuPercent
                       ? `${((data.host.cpuPercent / Math.max(data.host.systemCpuPercent, 0.1)) * 100).toFixed(0)}%`
                       : '—'}
-                    <span style={{ color: 'var(--text-faint)' }}> 的整机 CPU</span>
+                    <span style={{ color: 'var(--text-faint)' }}> 的机器总占用</span>
                   </dd>
                   <dt>线程</dt>
                   <dd className="tnum">{count(data.host.threads)}</dd>
@@ -344,7 +344,7 @@ export function AdminOverviewPage() {
                   <dd className="tnum">{duration(data.host.cpuTimeMs)}</dd>
                 </dl>
                 <p className="field-hint" style={{ marginTop: 10 }}>
-                  本进程的曲线画在上方「系统 · CPU」里，与整机同刻度，方便直接对比。
+                  本进程的曲线画在上方「系统 · CPU」里，与整机同刻度：两条线都是「占整机全部核心的百分比」，本服务的那条不会超过整机那条。
                 </p>
               </Card>
 

@@ -9,6 +9,12 @@
 //! records a baseline and reports nothing, and every later sample compares against the
 //! previous one. A sample older than a minute is discarded instead of producing a
 //! number that describes an idle gap.
+//!
+//! Both the process rate and the machine rate are percentages of *the whole machine*,
+//! so the two are directly comparable and the process can never exceed the machine it
+//! runs on. The machine rate is already that scale, because `/proc/stat`'s aggregate row
+//! sums every core; the process rate sums every thread, so it is divided by the core
+//! count to match.
 use std::{
     sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -488,12 +494,29 @@ impl std::fmt::Debug for History {
     }
 }
 
+/// This process's occupancy over an interval, as a percentage of the whole machine.
+///
+/// `used` and `elapsed` are both milliseconds of CPU time and wall time, so their ratio
+/// is a number of cores. Dividing by `cores` puts that on the same scale as
+/// [`History::system_rate`], where 100% is every core combined. Without it the process
+/// is measured against a single core while the machine is measured against all of them,
+/// and the process line rides `cores` times too high — often past the machine's own.
+fn process_cpu_percent(used: f64, elapsed: f64, cores: u64) -> f64 {
+    debug_assert!(elapsed > 0.0, "an empty interval has no rate");
+    let cores = cores.max(1) as f64;
+    ((used / elapsed / cores) * 1000.0).round() / 10.0
+}
+
 impl History {
     /// Records one reading and returns it.
     pub fn record(&self, requests: u64, client_errors: u64, server_errors: u64) -> Sample {
         let process = process();
         let memory = memory();
         let now = Instant::now();
+        let detected_cores = system_cpu_cores();
+        // An unreadable core count is still a machine with at least one core, and the
+        // rate needs a divisor either way. The field below keeps reporting the absence.
+        let cores = detected_cores.unwrap_or(1).max(1);
         let system_cpu_percent = self.system_rate(now);
         let (load_1m, load_5m, load_15m) = load_average().unwrap_or((0.0, 0.0, 0.0));
         let load_1m = Some(load_1m);
@@ -513,9 +536,7 @@ impl History {
                 return None;
             }
             let used = cpu_ms.checked_sub(ms)? as f64;
-            // Not clamped: a multi-threaded process legitimately exceeds one core, and
-            // hiding that is exactly what an operator is looking for.
-            Some((used / elapsed_ms * 1000.0).round() / 10.0)
+            Some(process_cpu_percent(used, elapsed_ms, cores))
         });
 
         let sample = Sample {
@@ -533,7 +554,7 @@ impl History {
             host_memory_anon_bytes: memory.anon_bytes,
             host_memory_file_cache_bytes: memory.file_cache_bytes,
             system_cpu_percent,
-            system_cpu_cores: system_cpu_cores(),
+            system_cpu_cores: detected_cores,
             load_1m,
             load_5m,
             load_15m,
@@ -714,6 +735,20 @@ mod tests {
         let free = disk.free_bytes.expect("free space is readable");
         assert!(size > 0);
         assert!(free <= size, "free space cannot exceed the filesystem size");
+    }
+
+    #[test]
+    fn the_process_rate_is_measured_against_the_whole_machine() {
+        // One core busy for the whole interval on a 16-core machine is 6.3%, not 100%.
+        // Measuring it as 100% is what put this process's line above the machine's.
+        assert_eq!(process_cpu_percent(1000.0, 1000.0, 16), 6.3);
+        assert_eq!(process_cpu_percent(500.0, 1000.0, 4), 12.5);
+        // Every core saturated reads as the machine being saturated.
+        assert_eq!(process_cpu_percent(4000.0, 1000.0, 4), 100.0);
+        // A single-core machine needs no correction.
+        assert_eq!(process_cpu_percent(250.0, 1000.0, 1), 25.0);
+        // A core count of zero would divide by zero; it is floored instead.
+        assert_eq!(process_cpu_percent(100.0, 1000.0, 0), 10.0);
     }
 
     #[test]
@@ -903,6 +938,32 @@ mod window_tests {
         }
         let value = measured.expect("a rate appears once the counters advance");
         assert!((0.0..=100.0).contains(&value), "implausible: {value}");
+    }
+
+    #[test]
+    fn the_process_never_outweighs_the_machine_it_runs_on() {
+        let history = History::default();
+        // Both counters move in clock ticks, one per core, and they are read at
+        // slightly different instants. Over a very short interval one tick of the
+        // process is worth a whole 6.25% of a sixteen-core machine, which would make
+        // this comparison a coin flip rather than a check. A quarter of a second puts
+        // a tick at about 0.2%, well inside the slack below.
+        history.record(0, 0, 0);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let sample = history.record(0, 0, 0);
+        let process = sample
+            .cpu_percent
+            .expect("the second sample has an interval");
+        let system = sample
+            .system_cpu_percent
+            .expect("the machine rate shares that interval");
+        // The two are read over the same interval, so the process — a part of the
+        // machine — cannot exceed it. Rounding at each end accounts for the slack.
+        assert!(
+            process <= system + 1.0,
+            "the process ({process}%) is measured on a different scale than \
+             the machine ({system}%), so the two cannot be compared"
+        );
     }
 
     #[test]
