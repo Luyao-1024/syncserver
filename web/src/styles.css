@@ -656,6 +656,10 @@ button {
 }
 
 .chart-fill {
+  /* Explicitly block-level: this is used on <span> as often as on <div>, and width
+     and height do not apply to a non-replaced inline element — without this the fill
+     collapses to nothing and only the track's background shows, as a full-width bar. */
+  display: block;
   height: 100%;
   border-radius: var(--radius-pill);
   transition: width var(--transition);
