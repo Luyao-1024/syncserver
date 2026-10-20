@@ -98,7 +98,7 @@ fn split_pairs_mixed_generation_dangling_references_invalid_fields_and_paths_fai
         validate_graph(&[], &records, &ops, false).unwrap_err().code,
         "PHOTO_PAIR_REQUIRED"
     );
-    for variant in 0..9 {
+    for variant in 0..11 {
         let mut after = records.clone();
         let asset = after
             .iter_mut()
@@ -117,6 +117,8 @@ fn split_pairs_mixed_generation_dangling_references_invalid_fields_and_paths_fai
             3 => asset.fields.get_mut("relativePath").unwrap().value = json!("../escape"),
             4 => asset.fields.get_mut("isFavorite").unwrap().value = json!(2),
             5 => asset.fields.get_mut("isHidden").unwrap().kind = "STRING".into(),
+            9 => asset.fields.get_mut("isTrashed").unwrap().value = json!(2),
+            10 => asset.fields.get_mut("isTrashed").unwrap().kind = "STRING".into(),
             6 => {
                 after
                     .iter_mut()

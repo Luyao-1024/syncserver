@@ -114,7 +114,8 @@ pub(super) async fn photos(
     let params = match parameters(
         &request,
         &[
-            "zone", "limit", "cursor", "media", "album", "favorite", "hidden", "from", "to", "q",
+            "zone", "limit", "cursor", "media", "album", "favorite", "hidden", "trashed", "from",
+            "to", "q",
         ],
     ) {
         Ok(params) => params,
@@ -141,6 +142,16 @@ pub(super) async fn photos(
     if from_ms.is_some_and(|from| to_ms.is_some_and(|to| from > to)) {
         return ApiError::bad_request().into_response();
     }
+    // The ordinary gallery is the live library. Trash is a separate view, so an
+    // omitted filter means "live only"; `trashed=true` is the trash album and
+    // `trashed=any` keeps the unfiltered meaning for callers that need both.
+    let trashed = match params.get("trashed").map(String::as_str) {
+        None => Some(false),
+        Some("any") => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(_) => return ApiError::bad_request().into_response(),
+    };
     let (Ok(media), Ok(album), Ok(query), Ok(cursor)) = (
         text(&params, "media", 16),
         text(&params, "album", 4096),
@@ -157,6 +168,7 @@ pub(super) async fn photos(
             album,
             favorite,
             hidden,
+            trashed,
             from_ms,
             to_ms,
             query,

@@ -355,6 +355,7 @@ pub(crate) struct IndexRow {
     pub asset_date_ms: Option<i64>,
     pub favorite: bool,
     pub hidden: bool,
+    pub trashed: bool,
     pub album: String,
     pub media_kind: MediaKind,
 }
@@ -363,17 +364,26 @@ pub(crate) struct IndexRow {
 /// `fields_json` is the committed `CPLAsset` projection; the media classification
 /// uses the server's own asset MIME, never anything the client asserted.
 pub(crate) fn index_row(tx: &Connection, zone: &str, photo_id: &str) -> Result<IndexRow> {
-    let row: (String, Option<i64>, i64, i64) = tx.query_row(
+    let row: (String, Option<i64>, i64, i64, i64) = tx.query_row(
         "SELECT r.fields_json,
                 CASE WHEN json_extract(r.fields_json,'$.assetDate.type')='TIMESTAMP'
                     THEN json_extract(r.fields_json,'$.assetDate.value') END,
                 COALESCE(json_extract(r.fields_json,'$.isFavorite.value'),0),
-                COALESCE(json_extract(r.fields_json,'$.isHidden.value'),0)
+                COALESCE(json_extract(r.fields_json,'$.isHidden.value'),0),
+                COALESCE(json_extract(r.fields_json,'$.isTrashed.value'),0)
          FROM records r JOIN photo_bindings b
            ON b.namespace_id=r.namespace_id AND b.zone_name=r.zone_name AND b.photo_id=r.record_name
          WHERE r.namespace_id=1 AND r.zone_name=?1 AND r.record_name=?2",
         params![zone, photo_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
     )?;
     let relative_path: String = tx.query_row(
         "SELECT relative_path FROM photo_bindings
@@ -398,6 +408,7 @@ pub(crate) fn index_row(tx: &Connection, zone: &str, photo_id: &str) -> Result<I
         asset_date_ms: row.1,
         favorite: row.2 != 0,
         hidden: row.3 != 0,
+        trashed: row.4 != 0,
     })
 }
 
@@ -405,7 +416,7 @@ pub(crate) fn index_row(tx: &Connection, zone: &str, photo_id: &str) -> Result<I
 /// that wrote the binding, so the index cannot disagree with the photo graph.
 pub(crate) fn write_index_row(tx: &Connection, row: &IndexRow) -> Result<()> {
     tx.execute(
-        "UPDATE photo_bindings SET asset_date_ms=?3, favorite=?4, hidden=?5, album=?6, media_kind=?7
+        "UPDATE photo_bindings SET asset_date_ms=?3, favorite=?4, hidden=?5, album=?6, media_kind=?7, trashed=?8
          WHERE namespace_id=1 AND photo_id=?1 AND relative_path=?2",
         params![
             row.photo_id,
@@ -415,6 +426,7 @@ pub(crate) fn write_index_row(tx: &Connection, row: &IndexRow) -> Result<()> {
             i64::from(row.hidden),
             row.album,
             row.media_kind.as_i64(),
+            i64::from(row.trashed),
         ],
     )?;
     Ok(())

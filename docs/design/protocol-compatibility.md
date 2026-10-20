@@ -55,7 +55,7 @@ recordType 创建后不可改；已退休 recordName 不复用，重建使用新
 
 ## 照片角色扩展
 
-照片使用 CPLMaster 资源描述与 CPLAsset/masterRef 的受支持子集，并绑定 original/thumbnail 与 content generation。两记录一对一关联；发布、内容更新及删除在单 zone atomic 批次的最终图中验证。元数据更新可单独执行，跨 zone/拆对/解绑拒绝。字段、生命周期与共享资产规则见照片记录契约，不能将通用 CRUD 当作绕过照片完整性的方法。
+照片使用 CPLMaster 资源描述与 CPLAsset/masterRef 的受支持子集，并绑定 original/thumbnail 与 content generation。两记录一对一关联；发布、内容更新及删除在单 zone atomic 批次的最终图中验证。元数据更新可单独执行，跨 zone/拆对/解绑拒绝。字段、生命周期与共享资产规则见照片记录契约，不能将通用 CRUD 当作绕过照片完整性的方法。`isFavorite/isHidden/isTrashed` 都是可选 INT64 0/1 字段；`isTrashed` 只改变控制台回收站投影，不改变资源、绑定、版本条件或删除语义。
 
 缩略图与原图 AssetId、digest、size 各自独立。预览 URL 不指向原图。具体字段扩展和下载流程见[完整媒体同步](media-sync.md)与[资源生命周期](asset-lifecycle.md)。
 

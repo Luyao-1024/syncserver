@@ -104,6 +104,11 @@ C1 的 dirty 是本地既有同步记录上的字段，另有本地变更版本�
 [运维指标](../contracts/metrics.md)存于进程计数器，不增加持久表、不分配媒体 seq、不改变 schema v5。运行标识复用本次 service_starts 的 run_id，与同步 generation 和租约 fence 独立。每次服务实例启动重新计数；队列长度和传输占用为采样值，不构成提交或客户端进度证据。
 
 
+## 回收站投影（schema v7）
+
+schema v7 为 `photo_bindings` 增加由 `CPLAsset.isTrashed` 派生的 `trashed` 列：与其它展示字段在同一记录事务写入，升级时由写路径同一 `index_row` 规则回填。控制台普通照片列表、相册、时间线与汇总只读 `trashed=0`，回收站相册通过 `trashed=true` 读取同一投影。该列只是读取索引，不进入记录版本、变化流、同步 token 或空间配额；回收站照片仍是活跃记录，永久成对删除才移除绑定。
+
+
 ## 多用户扩展的数据归属
 
 各用户的上述照片 schema 独立存放；不把多个账户用一个可任意传入 tenant 的请求混在同一接口上下文。普通用户 tenant 为不可变用户 UUID；唯一显式接管者保留旧 namespace 与代际。认证库另有 schema 1：users 保存 UUID、唯一用户名、Argon2id PHC、授权版本、enabled 和 legacy 所有权；sessions 保存随机秘密的 SHA-256、用户 UUID、授权版本、绝对过期时间。不保存明文密码或会话。详见[认证契约](../contracts/authentication.md)。

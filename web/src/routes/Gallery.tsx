@@ -17,6 +17,14 @@ import { useNotice } from '../state/toasts'
 import { Shell } from './Shell'
 
 const PAGE = 120
+type View = MediaFilter | 'trash'
+const VIEWS: Array<{ value: View; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'image', label: '图片' },
+  { value: 'video', label: '视频' },
+  { value: 'other', label: '其他' },
+  { value: 'trash', label: '回收站' },
+]
 
 export function GalleryPage() {
   const notice = useNotice()
@@ -25,7 +33,7 @@ export function GalleryPage() {
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [media, setMedia] = useState<MediaFilter>('all')
+  const [view, setView] = useState<View>('all')
   const [query, setQuery] = useState('')
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState<number | null>(null)
@@ -41,7 +49,15 @@ export function GalleryPage() {
     const controller = new AbortController()
     const id = ++request.current
     setLoading(true)
-    fetchPhotos({ media, query: search, limit: PAGE }, controller.signal)
+    fetchPhotos(
+      {
+        media: view === 'trash' ? 'all' : view,
+        trashed: view === 'trash' ? true : undefined,
+        query: search,
+        limit: PAGE,
+      },
+      controller.signal,
+    )
       .then((page) => {
         if (id !== request.current) return
         setItems(page.photos)
@@ -56,7 +72,7 @@ export function GalleryPage() {
         if (id === request.current) setLoading(false)
       })
     return () => controller.abort()
-  }, [media, search, notice])
+  }, [view, search, notice])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -72,7 +88,13 @@ export function GalleryPage() {
     if (!cursor || loadingMore) return
     setLoadingMore(true)
     try {
-      const page = await fetchPhotos({ media, query: search, limit: PAGE, cursor })
+      const page = await fetchPhotos({
+        media: view === 'trash' ? 'all' : view,
+        trashed: view === 'trash' ? true : undefined,
+        query: search,
+        limit: PAGE,
+        cursor,
+      })
       setItems((current) => [...current, ...page.photos])
       setCursor(page.nextCursor)
       setHasMore(page.hasMore)
@@ -111,7 +133,13 @@ export function GalleryPage() {
   return (
     <Shell
       title="图库"
-      subtitle={totals ? `共 ${count(totals.photoCount)} 张` : '读取中…'}
+      subtitle={
+        view === 'trash'
+          ? '回收站'
+          : totals
+            ? `共 ${count(totals.photoCount)} 张`
+            : '读取中…'
+      }
     >
       <div className="toolbar">
         <div style={{ position: 'relative' }}>
@@ -136,13 +164,13 @@ export function GalleryPage() {
           />
         </div>
         <div className="segmented">
-          {(['all', 'image', 'video', 'other'] as MediaFilter[]).map((value) => (
+          {VIEWS.map((option) => (
             <button
-              key={value}
-              className={media === value ? 'on' : ''}
-              onClick={() => setMedia(value)}
+              key={option.value}
+              className={view === option.value ? 'on' : ''}
+              onClick={() => setView(option.value)}
             >
-              {value === 'all' ? '全部' : value === 'image' ? '图片' : value === 'video' ? '视频' : '其他'}
+              {option.label}
             </button>
           ))}
         </div>
@@ -158,11 +186,19 @@ export function GalleryPage() {
 
       {!loading && items.length === 0 && (
         <Empty
-          title={search ? '没有匹配的照片' : '云空间还是空的'}
+          title={
+            search
+              ? '没有匹配的照片'
+              : view === 'trash'
+                ? '回收站是空的'
+                : '云空间还是空的'
+          }
           note={
             search
               ? '换一个关键词试试。'
-              : '用手机客户端同步照片后，这里会按拍摄时间显示。'
+              : view === 'trash'
+                ? '客户端移入回收站的照片会出现在这里。'
+                : '用手机客户端同步照片后，这里会按拍摄时间显示。'
           }
         />
       )}

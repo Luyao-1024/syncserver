@@ -24,7 +24,7 @@ recordName 不可变；保留过墓碑的名称不能用于 create，返回 RECO
 | CPLAsset | masterRef | REFERENCE，value 含 recordName、action=NONE；zoneID 可省略，但不能跨 zone |
 | CPLAsset | contentGeneration | STRING，与 Master 相同 UUID |
 | CPLAsset | relativePath | STRING，安全相对路径；同 zone 活跃照片间唯一 |
-| CPLAsset | isFavorite/isHidden | 可选 INT64，只接受 0/1，默认 0 |
+| CPLAsset | isFavorite/isHidden/isTrashed | 可选 INT64，只接受 0/1，默认 0 |
 | CPLAsset | assetDate | 可选 TIMESTAMP，UTC Unix 毫秒整数 |
 
 未知非保留字段可按通用 CloudKit 字段规则保存，不改变引用和权限；保留字段不能删除或改错类型。recordType 首版不可改；测试未来需要类型变化时另行扩展契约。
@@ -50,6 +50,12 @@ ASSETID 写入描述符含 AssetId 与服务端 receipt，并带 size、fileChec
 
 事务在应用全部操作后验证最终图，再提交 records、record_versions、changes、photo_bindings 和 receipt；输入操作顺序不影响最终合法性。删除批次和创建批次可任意排列两记录操作。
 
+## 回收站标记
+
+`isTrashed=1` 表示照片已从图库移入回收站，是一个普通的条件 metadata update：不改变 photoId、masterRef、generation、原图/缩略图字节，也不产生删除墓碑或释放空间配额。恢复使用 `isTrashed=0`。回收站中的照片仍是活跃记录，继续占用 relativePath，直到成对删除 CPLAsset/CPLMaster 才移除绑定（资产字节仍保留，见下节）。
+
+服务端把该字段投影为 `photo_bindings.trashed`。Web 控制台的普通照片列表、相册、时间线和汇总默认排除回收站照片；`GET /v1/console/photos?trashed=true` 是回收站相册的数据来源，单张详情仍可按 photoId 读取。该投影只影响控制台展示，不改变记录、变化流或同步语义。
+
 ## 删除、解绑、重建
 
 1. 删除照片要求同 atomic 批次 delete Asset 与 Master，两条当前 revision 都必需。去除当前绑定并为两记录产生墓碑，不删除资产字节。
@@ -66,7 +72,7 @@ photo_bindings 必须有唯一键 `(namespace,zone,photo_id)` 和 `(namespace,zo
 
 ## 验收
 
-创建/删除顺序；孤儿/跨 zone；不同 revision 并发；非 atomic 拆对；重复路径；退休名称；metadata-only 不增加资源；相同资产跨 generation 去重；共享资产删除后其他照片仍可下载。
+创建/删除顺序；孤儿/跨 zone；不同 revision 并发；非 atomic 拆对；重复路径；退休名称；metadata-only 不增加资源；相同资产跨 generation 去重；共享资产删除后其他照片仍可下载；isTrashed 元数据更新只改变回收站投影，不改变资源或 generation，非法值拒绝，普通列表/相册/时间线/汇总排除回收站照片。
 
 ## M2 验证边界
 

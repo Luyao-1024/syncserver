@@ -20,6 +20,7 @@ export interface Photo {
   assetDateMs: number | null
   favorite: boolean
   hidden: boolean
+  trashed: boolean
   mediaType: 'image' | 'video' | 'other'
   bytes: number
   original: AssetView
@@ -49,6 +50,8 @@ export interface Album {
 export interface AlbumListing {
   albums: Album[]
   ungrouped: Album
+  /** Photos in the recycle bin; they are not part of any stored album. */
+  trashedCount: number
   zone: { zoneName: string }
 }
 
@@ -92,6 +95,7 @@ export interface PhotoQuery {
   album?: string | null
   favorite?: boolean
   hidden?: boolean
+  trashed?: boolean
   query?: string
   limit?: number
   cursor?: string | null
@@ -117,6 +121,7 @@ export async function photos(
       album: query.album,
       favorite: query.favorite,
       hidden: query.hidden,
+      trashed: query.trashed,
       q: query.query,
       limit: query.limit,
       cursor: query.cursor,

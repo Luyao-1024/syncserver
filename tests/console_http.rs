@@ -49,7 +49,14 @@ async fn ready(app: &Running) -> Lease {
 ///
 /// The two fixture assets are genuine, thumbnail-validated PNGs, so the console
 /// returns descriptors the server actually published rather than forged rows.
-async fn publish_photo(app: &Running, lease: &Lease, fixture: &Value, assets: &[Value], id: usize) {
+async fn publish_photo(
+    app: &Running,
+    lease: &Lease,
+    fixture: &Value,
+    assets: &[Value],
+    id: usize,
+    trashed: bool,
+) {
     let mut descriptors = Vec::new();
     for asset in assets {
         let bytes = STANDARD
@@ -124,6 +131,9 @@ async fn publish_photo(app: &Running, lease: &Lease, fixture: &Value, assets: &[
                 json!(format!("Camera/2026/IMG_{id:04}.png"));
             operation["record"]["fields"]["assetDate"] =
                 json!({"type":"TIMESTAMP","value":1760000000000 + (id as i64) * 86400000});
+            if trashed {
+                operation["record"]["fields"]["isTrashed"] = json!({"type":"INT64","value":1});
+            }
         }
     }
     let response = lease
@@ -143,6 +153,12 @@ async fn publish_photo(app: &Running, lease: &Lease, fixture: &Value, assets: &[
 }
 
 async fn seeded(count: usize) -> (tempfile::TempDir, Running) {
+    seeded_with_trash(count, &[]).await
+}
+
+/// Seeds the same real photo pairs, marking the listed indices as already in the
+/// recycle bin, which is how a second device observes a photo trashed elsewhere.
+async fn seeded_with_trash(count: usize, trashed: &[usize]) -> (tempfile::TempDir, Running) {
     let fixture: Value =
         serde_json::from_str(include_str!("../docs/contracts/fixtures.json")).unwrap();
     let assets = fixture["binaryAssets"].as_array().unwrap().clone();
@@ -156,7 +172,15 @@ async fn seeded(count: usize) -> (tempfile::TempDir, Running) {
     .await;
     let lease = ready(&app).await;
     for index in 0..count {
-        publish_photo(&app, &lease, &fixture, &assets, index).await;
+        publish_photo(
+            &app,
+            &lease,
+            &fixture,
+            &assets,
+            index,
+            trashed.contains(&index),
+        )
+        .await;
     }
     (root, app)
 }
@@ -291,6 +315,7 @@ async fn filters_narrow_the_listing_and_bad_parameters_are_refused() {
         "/v1/console/photos?limit=201",
         "/v1/console/photos?limit=abc",
         "/v1/console/photos?favorite=maybe",
+        "/v1/console/photos?trashed=maybe",
         "/v1/console/photos?zone=NoSuchZone",
         "/v1/console/photos?unknown=1",
         "/v1/console/photos?media=image&media=video",
@@ -299,6 +324,55 @@ async fn filters_narrow_the_listing_and_bad_parameters_are_refused() {
         let (status, body) = get(&app, path).await;
         assert_eq!(status, 400, "{path}: {body}");
     }
+}
+
+#[tokio::test]
+async fn trashed_photos_leave_the_gallery_and_form_a_separate_album() {
+    let (_root, app) = seeded_with_trash(3, &[1]).await;
+
+    // The ordinary gallery is the live library: the trashed photo is not in it.
+    let (status, body) = get(&app, "/v1/console/photos").await;
+    assert_eq!(status, 200, "{body}");
+    let photos = body["photos"].as_array().unwrap();
+    let ids: Vec<&str> = photos
+        .iter()
+        .map(|photo| photo["photoId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["photo-2", "photo-0"]);
+    assert!(photos.iter().all(|photo| photo["trashed"] == false));
+
+    // The trash album is the same listing with the explicit filter.
+    let (status, body) = get(&app, "/v1/console/photos?trashed=true").await;
+    assert_eq!(status, 200, "{body}");
+    let photos = body["photos"].as_array().unwrap();
+    assert_eq!(photos.len(), 1);
+    assert_eq!(photos[0]["photoId"], "photo-1");
+    assert_eq!(photos[0]["trashed"], true);
+
+    // `any` keeps the unfiltered meaning for a caller that needs both.
+    let (status, body) = get(&app, "/v1/console/photos?trashed=any").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["photos"].as_array().unwrap().len(), 3);
+
+    // Aggregates describe the live gallery; the trash count is reported apart.
+    let (status, body) = get(&app, "/v1/console/albums").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["albums"][0]["photoCount"], 2);
+    assert_eq!(body["trashedCount"], 1);
+
+    let (status, body) = get(&app, "/v1/console/timeline").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["months"][0]["photoCount"], 2);
+
+    let (status, body) = get(&app, "/v1/console/summary").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["photoCount"], 2);
+    assert_eq!(body["imageCount"], 2);
+
+    // The trash album still opens a trashed photo in the preview.
+    let (status, body) = get(&app, "/v1/console/photos/photo-1").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["photo"]["trashed"], true);
 }
 
 #[tokio::test]

@@ -119,6 +119,7 @@ export function PhotoViewer({
             <div className="viewer-meta tnum">
               {photoLabel(detail.assetDateMs)} · {detail.mediaType === 'image' ? '图片' : detail.mediaType === 'video' ? '视频' : '其他'} ·{' '}
               {bytes(detail.original.size)} · {detail.original.mimeType}
+              {detail.trashed && ' · 已移入回收站'}
             </div>
           )}
         </div>

@@ -115,6 +115,10 @@
         "isHidden": {
           "type": "INT64",
           "value": 0
+        },
+        "isTrashed": {
+          "type": "INT64",
+          "value": 0
         }
       }
     }
@@ -208,6 +212,10 @@
               "value": 0
             },
             "isHidden": {
+              "type": "INT64",
+              "value": 0
+            },
+            "isTrashed": {
               "type": "INT64",
               "value": 0
             }

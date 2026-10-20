@@ -37,6 +37,9 @@ pub struct Filters<'a> {
     pub album: Option<&'a str>,
     pub favorite: Option<bool>,
     pub hidden: Option<bool>,
+    /// `None` includes both live and trashed photos; the API defaults the ordinary
+    /// gallery to `Some(false)` and the trash album asks for `Some(true)`.
+    pub trashed: Option<bool>,
     pub from_ms: Option<i64>,
     pub to_ms: Option<i64>,
     /// Substring of the relative path. A scan by nature, and bounded on purpose.
@@ -75,7 +78,7 @@ fn album_prefix(album: &str) -> Result<String> {
 }
 
 const COLUMNS: &str = "b.photo_id, b.master_record_name, b.relative_path, b.album,
-     b.asset_date_ms, b.favorite, b.hidden, b.media_kind, b.content_generation,
+     b.asset_date_ms, b.favorite, b.hidden, b.trashed, b.media_kind, b.content_generation,
      r.revision, m.revision,
      b.original_asset_id, b.thumbnail_asset_id";
 
@@ -87,12 +90,13 @@ fn row_to_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let asset_date_ms: Option<i64> = row.get(4)?;
     let favorite: i64 = row.get(5)?;
     let hidden: i64 = row.get(6)?;
-    let media_kind: i64 = row.get(7)?;
-    let generation: String = row.get(8)?;
-    let asset_tag: String = row.get(9)?;
-    let master_tag: String = row.get(10)?;
-    let original_id: String = row.get(11)?;
-    let thumbnail_id: String = row.get(12)?;
+    let trashed: i64 = row.get(7)?;
+    let media_kind: i64 = row.get(8)?;
+    let generation: String = row.get(9)?;
+    let asset_tag: String = row.get(10)?;
+    let master_tag: String = row.get(11)?;
+    let original_id: String = row.get(12)?;
+    let thumbnail_id: String = row.get(13)?;
     Ok(json!({
         "photoId": photo_id,
         "masterRecordName": master,
@@ -101,6 +105,7 @@ fn row_to_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "assetDateMs": asset_date_ms,
         "favorite": favorite != 0,
         "hidden": hidden != 0,
+        "trashed": trashed != 0,
         "mediaType": match media_kind { 0 => "image", 1 => "video", _ => "other" },
         "contentGeneration": generation,
         // Both revisions, because a rename or a delete must be conditional on both
@@ -168,8 +173,9 @@ pub(crate) fn photos(
              AND (?7 IS NULL OR b.asset_date_ms>=?7)
              AND (?8 IS NULL OR b.relative_path LIKE '%' || ?8 || '%' ESCAPE '\\')
              AND (?9 IS NULL OR (b.asset_date_ms, b.photo_id) < (?9, ?10))
+             AND (?11 IS NULL OR b.trashed=?11)
              ORDER BY b.asset_date_ms DESC, b.photo_id DESC
-             LIMIT ?11"
+             LIMIT ?12"
         ))
         .map_err(|_| Error::RecoveryFailed)?;
     // A path substring is matched literally: the caller's wildcards are escaped, so
@@ -193,6 +199,7 @@ pub(crate) fn photos(
                 escaped.as_deref(),
                 after.and_then(|cursor| cursor.asset_date_ms),
                 after.map(|cursor| cursor.photo_id.as_str()),
+                filters.trashed.map(i64::from),
                 (limit + 1) as i64,
             ],
             row_to_view,
@@ -270,7 +277,7 @@ pub(crate) fn albums(db: &Connection, zone: &str, prefix: Option<&str>) -> Resul
                   + COALESCE(SUM((SELECT ta.size FROM assets ta
                         WHERE ta.namespace_id=b.namespace_id AND ta.asset_id=b.thumbnail_asset_id)),0)
              FROM photo_bindings b
-             WHERE b.namespace_id=1 AND b.zone_name=?1
+             WHERE b.namespace_id=1 AND b.zone_name=?1 AND b.trashed=0
                AND (?2 IS NULL OR b.album=?2 OR b.album LIKE ?2 || '/%')
              GROUP BY b.album ORDER BY b.album",
         )
@@ -298,7 +305,19 @@ pub(crate) fn albums(db: &Connection, zone: &str, prefix: Option<&str>) -> Resul
             albums.push(album);
         }
     }
-    Ok(json!({"albums": albums, "ungrouped": ungrouped, "zone": {"zoneName": zone}}))
+    // The trash album is not a stored album: it is the same index filtered by the
+    // record's isTrashed projection, so its count is reported separately.
+    let trashed_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM photo_bindings b
+             WHERE b.namespace_id=1 AND b.zone_name=?1 AND b.trashed=1",
+            params![zone],
+            |row| row.get(0),
+        )
+        .map_err(|_| Error::RecoveryFailed)?;
+    Ok(
+        json!({"albums": albums, "ungrouped": ungrouped, "trashedCount": trashed_count.max(0), "zone": {"zoneName": zone}}),
+    )
 }
 
 #[derive(Serialize)]
@@ -323,6 +342,7 @@ pub(crate) fn timeline(db: &Connection, zone: &str, months: i64) -> Result<Value
                         WHERE ta.namespace_id=b.namespace_id AND ta.asset_id=b.thumbnail_asset_id)),0)
              FROM photo_bindings b
              WHERE b.namespace_id=1 AND b.zone_name=?1 AND b.asset_date_ms IS NOT NULL
+               AND b.trashed=0
              GROUP BY month ORDER BY month DESC LIMIT ?2",
         )
         .map_err(|_| Error::RecoveryFailed)?;
@@ -352,7 +372,7 @@ pub(crate) fn summary(db: &Connection, zone: &str) -> Result<Value> {
                     COALESCE(SUM(b.media_kind=2),0),
                     COUNT(DISTINCT NULLIF(b.album,'')),
                     MIN(b.asset_date_ms), MAX(b.asset_date_ms)
-             FROM photo_bindings b WHERE b.namespace_id=1 AND b.zone_name=?1",
+             FROM photo_bindings b WHERE b.namespace_id=1 AND b.zone_name=?1 AND b.trashed=0",
         )
         .map_err(|_| Error::RecoveryFailed)?;
     let counts: (i64, i64, i64, i64, i64, Option<i64>, Option<i64>) = statement
@@ -374,7 +394,7 @@ pub(crate) fn summary(db: &Connection, zone: &str) -> Result<Value> {
                 WHERE oa.namespace_id=b.namespace_id AND oa.asset_id=b.original_asset_id)),0)
               + COALESCE(SUM((SELECT ta.size FROM assets ta
                 WHERE ta.namespace_id=b.namespace_id AND ta.asset_id=b.thumbnail_asset_id)),0)
-             FROM photo_bindings b WHERE b.namespace_id=1 AND b.zone_name=?1",
+             FROM photo_bindings b WHERE b.namespace_id=1 AND b.zone_name=?1 AND b.trashed=0",
             params![zone],
             |row| row.get(0),
         )
@@ -402,6 +422,7 @@ pub struct Listing {
     pub album: Option<String>,
     pub favorite: Option<bool>,
     pub hidden: Option<bool>,
+    pub trashed: Option<bool>,
     pub from_ms: Option<i64>,
     pub to_ms: Option<i64>,
     pub query: Option<String>,
@@ -445,6 +466,7 @@ pub(crate) fn execute(db: &Connection, guard: &Guard<'_>, request: Request) -> R
                 album: listing.album.as_deref(),
                 favorite: listing.favorite,
                 hidden: listing.hidden,
+                trashed: listing.trashed,
                 from_ms: listing.from_ms,
                 to_ms: listing.to_ms,
                 query: listing.query.as_deref(),

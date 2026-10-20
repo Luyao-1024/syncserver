@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x53594e43;
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 pub(crate) fn initialize(
     connection: &mut Connection,
@@ -125,6 +125,12 @@ pub(crate) fn initialize(
         // same rules the write path uses rather than from a second SQL copy of them.
         super::storage::backfill_photo_index(&tx)?;
     }
+    if fresh || version < 7 {
+        tx.execute_batch(include_str!("migration_v7.sql"))?;
+        // The recycle-bin column is derived from the committed CPLAsset fields, so the
+        // same backfill keeps existing libraries consistent with the write path.
+        super::storage::backfill_photo_index(&tx)?;
+    }
     let last_version: i64 = tx.query_row(
         "SELECT coalesce(max(seq),0) FROM record_versions WHERE namespace_id=1",
         [],
@@ -225,5 +231,95 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    /// A v6 library already contains trashed photos as committed record fields; the
+    /// new column must be derived from those rows, not left at its 0 default.
+    #[test]
+    fn v7_backfills_the_recycle_bin_from_committed_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let mut db = Connection::open(root.path().join("metadata.sqlite")).unwrap();
+        let generation = Uuid::new_v4();
+        v1(&mut db, generation);
+        {
+            let tx = db.transaction().unwrap();
+            for script in [
+                include_str!("migration_v2.sql"),
+                include_str!("migration_v3.sql"),
+                include_str!("migration_v4.sql"),
+                include_str!("migration_v5.sql"),
+                include_str!("migration_v6.sql"),
+            ] {
+                tx.execute_batch(script).unwrap();
+            }
+            let fields = r#"{"relativePath":{"type":"STRING","value":"Camera/IMG_1.png"},"isTrashed":{"type":"INT64","value":1}}"#;
+            tx.execute(
+                "INSERT INTO records(namespace_id,zone_name,record_name,record_type,revision,seq,fields_json,deleted)
+                 VALUES(1,'PrimarySync','master-1','CPLMaster','rev-m',1,'{}',0)",
+                [],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO records(namespace_id,zone_name,record_name,record_type,revision,seq,fields_json,deleted)
+                 VALUES(1,'PrimarySync','photo-1','CPLAsset','rev-p',2,?1,0)",
+                params![fields],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO record_versions(namespace_id,zone_name,record_name,seq,record_type,revision,fields_json,deleted)
+                 VALUES(1,'PrimarySync','master-1',1,'CPLMaster','rev-m','{}',0)",
+                [],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO record_versions(namespace_id,zone_name,record_name,seq,record_type,revision,fields_json,deleted)
+                 VALUES(1,'PrimarySync','photo-1',2,'CPLAsset','rev-p',?1,0)",
+                params![fields],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO changes VALUES(1,1,'PrimarySync','master-1')",
+                [],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO changes VALUES(1,2,'PrimarySync','photo-1')",
+                [],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO photo_bindings(namespace_id,zone_name,photo_id,master_record_name,
+                    relative_path,content_generation,original_asset_id,thumbnail_asset_id)
+                 VALUES(1,'PrimarySync','photo-1','master-1','Camera/IMG_1.png',
+                    '11111111-1111-4111-8111-111111111111',
+                    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')",
+                [],
+            )
+            .unwrap();
+            tx.execute(
+                "UPDATE namespace_counters SET last_committed_seq=2 WHERE namespace_id=1",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(
+            initialize(&mut db, &config("com.apple.photos.cloud"), &[1; 32]).unwrap(),
+            generation
+        );
+        assert_eq!(
+            db.pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let trashed: i64 = db
+            .query_row(
+                "SELECT trashed FROM photo_bindings WHERE photo_id='photo-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(trashed, 1);
     }
 }

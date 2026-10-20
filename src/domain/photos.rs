@@ -170,7 +170,7 @@ pub fn validate_graph(
                 "An active photo already uses this relative path",
             ));
         }
-        for name in ["isFavorite", "isHidden"] {
+        for name in ["isFavorite", "isHidden", "isTrashed"] {
             if asset_record.fields.get(name).is_some_and(|field| {
                 field.kind != "INT64" || !matches!(field.value.as_i64(), Some(0 | 1))
             }) {
