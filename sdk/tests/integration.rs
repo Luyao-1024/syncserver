@@ -132,7 +132,7 @@ async fn handle(State(mock): State<Arc<Mock>>, request: Request) -> Response {
                 .into_response()
         }
         ("POST", "/v1/upload-leases") => {
-            assert_eq!(value["deviceID"], "device-1");
+            assert_eq!(value["deviceId"], "device-1");
             assert_eq!(value["zoneIDs"][0]["zoneName"], ZONE);
             *mock.phase.lock().unwrap() = "checking".into();
             Json(json!({

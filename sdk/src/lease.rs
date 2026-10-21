@@ -524,7 +524,7 @@ impl Connection {
             return Err(Error::Protocol("invalid device id".into()));
         }
         let url = self.url(&["v1", "upload-leases"])?;
-        let body = json!({ "deviceID": device_id, "zoneIDs": [zone] });
+        let body = json!({ "deviceId": device_id, "zoneIDs": [zone] });
         let bytes = self
             .client()
             .post_json_bytes(&url, &body, None, None)
