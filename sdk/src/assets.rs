@@ -16,7 +16,7 @@
 use crate::Error;
 use crate::client::{Connection, MAX_JSON_BYTES, decode, read_limited};
 use crate::error::map_http;
-use crate::lease::UploadLease;
+use crate::lease::{LeaseProof, UploadLease};
 use crate::model::{AssetDescriptor, MASTER_RECORD_TYPE, ZoneId, identifier};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use reqwest::StatusCode;
@@ -503,6 +503,38 @@ impl Connection {
         requests: &[ReservationRequest],
     ) -> Result<Vec<AssetReservation>, Error> {
         lease.require_held()?;
+        let phase = lease.phase().ok_or_else(|| {
+            Error::PhaseMismatch(
+                "the progress check has not passed; the lease is still checking".into(),
+            )
+        })?;
+        if phase != intent.phase() {
+            return Err(Error::PhaseMismatch(format!(
+                "a {:?} reservation requires the {:?} phase, but the lease is in {:?}",
+                intent,
+                intent.phase(),
+                phase
+            )));
+        }
+        self.reserve_assets_with_proof(lease.zone(), lease.proof(), master_record, intent, requests)
+            .await
+    }
+
+    /// Reserve resources under a lease proof the caller already holds.
+    ///
+    /// This is for clients that own lease renewal and phase tracking: the
+    /// service still enforces both, but the SDK can only enforce the request
+    /// shape here. Prefer [`Connection::reserve_assets`] when an
+    /// [`UploadLease`] is available.
+    pub async fn reserve_assets_with_proof(
+        &self,
+        zone: &crate::model::ZoneId,
+        proof: &LeaseProof,
+        master_record: &str,
+        intent: UploadIntent,
+        requests: &[ReservationRequest],
+    ) -> Result<Vec<AssetReservation>, Error> {
+        self.check_zone(zone)?;
         if !identifier(master_record) {
             return Err(Error::Protocol("invalid master record name".into()));
         }
@@ -510,14 +542,6 @@ impl Connection {
             return Err(Error::Protocol(
                 "reserve one or both roles of a photo".into(),
             ));
-        }
-        if lease.phase() != Some(intent.phase()) {
-            return Err(Error::PhaseMismatch(format!(
-                "a {:?} reservation requires the {:?} phase, but the lease is in {:?}",
-                intent,
-                intent.phase(),
-                lease.phase()
-            )));
         }
         let mut seen = std::collections::BTreeSet::new();
         for request in requests {
@@ -539,7 +563,6 @@ impl Connection {
                 )));
             }
         }
-        let zone = lease.zone();
         let tokens: Vec<ReserveToken<'_>> = requests
             .iter()
             .map(|request| ReserveToken {
@@ -560,11 +583,11 @@ impl Connection {
             .map_err(|error| Error::Protocol(format!("reservation is not encodable: {error}")))?;
         let payload = serde_json::to_vec(&value)
             .map_err(|error| Error::Protocol(format!("reservation is not encodable: {error}")))?;
-        let key = reservation_key(&payload, lease);
+        let key = reservation_key(&payload, proof);
         let url = self.cloudkit_url("assets/upload")?;
         let bytes = self
             .client()
-            .post_json_bytes(&url, &value, Some(lease.proof()), Some(&key))
+            .post_json_bytes(&url, &value, Some(proof), Some(&key))
             .await?;
         let response: ReserveResponse = decode(&bytes)?;
         if response.tokens.len() != requests.len() {
@@ -643,6 +666,19 @@ impl Connection {
         bytes: &[u8],
     ) -> Result<AssetDescriptor, Error> {
         lease.require_held()?;
+        self.upload_asset_with_proof(lease.proof(), reservation, digest, bytes)
+            .await
+    }
+
+    /// Upload bytes under a lease proof the caller already holds. The caller is
+    /// responsible for lease liveness; the service verifies the proof.
+    pub async fn upload_asset_with_proof(
+        &self,
+        proof: &LeaseProof,
+        reservation: &AssetReservation,
+        digest: &ContentDigest,
+        bytes: &[u8],
+    ) -> Result<AssetDescriptor, Error> {
         let actual = ContentDigest::from_bytes(bytes);
         if actual.size() != digest.size() || actual.hex() != digest.hex() {
             return Err(Error::ChecksumMismatch {
@@ -664,7 +700,7 @@ impl Connection {
             .header(CONTENT_TYPE, "application/octet-stream")
             .header(CONTENT_LENGTH, bytes.len() as u64)
             .body(bytes.to_vec());
-        for (name, value) in lease.proof().headers() {
+        for (name, value) in proof.headers() {
             request = request.header(name, value);
         }
         let response = request
@@ -690,6 +726,19 @@ impl Connection {
         path: impl AsRef<Path>,
     ) -> Result<AssetDescriptor, Error> {
         lease.require_held()?;
+        self.upload_asset_file_with_proof(lease.proof(), reservation, digest, path)
+            .await
+    }
+
+    /// Stream a file under a lease proof the caller already holds. The caller
+    /// is responsible for lease liveness; the service verifies the proof.
+    pub async fn upload_asset_file_with_proof(
+        &self,
+        proof: &LeaseProof,
+        reservation: &AssetReservation,
+        digest: &ContentDigest,
+        path: impl AsRef<Path>,
+    ) -> Result<AssetDescriptor, Error> {
         if let Some(descriptor) = self.published(reservation, digest)? {
             return Ok(descriptor);
         }
@@ -713,7 +762,7 @@ impl Connection {
             .header(CONTENT_TYPE, "application/octet-stream")
             .header(CONTENT_LENGTH, size)
             .body(reqwest::Body::wrap_stream(stream));
-        for (name, value) in lease.proof().headers() {
+        for (name, value) in proof.headers() {
             request = request.header(name, value);
         }
         let response = request
@@ -749,13 +798,24 @@ impl Connection {
         session_id: &str,
     ) -> Result<AssetReservation, Error> {
         lease.require_held()?;
+        self.renew_upload_session_with_proof(lease.proof(), session_id)
+            .await
+    }
+
+    /// Extend a `Reserved` session under a lease proof the caller already
+    /// holds. The caller is responsible for lease liveness.
+    pub async fn renew_upload_session_with_proof(
+        &self,
+        proof: &LeaseProof,
+        session_id: &str,
+    ) -> Result<AssetReservation, Error> {
         if !identifier(session_id) {
             return Err(Error::Protocol("invalid session id".into()));
         }
         let url = self.url(&["v1", "uploads", session_id, "renew"])?;
         let bytes = self
             .client()
-            .post_json_bytes(&url, &json!({}), Some(lease.proof()), None)
+            .post_json_bytes(&url, &json!({}), Some(proof), None)
             .await?;
         let token: ReserveTokenResponse = decode(&bytes)?;
         let role = AssetRole::from_field(&token.field_name).ok_or_else(|| {
@@ -976,11 +1036,11 @@ impl Connection {
     }
 }
 
-fn reservation_key(payload: &[u8], lease: &UploadLease) -> String {
+fn reservation_key(payload: &[u8], proof: &LeaseProof) -> String {
     let mut hash = Sha256::new();
     hash.update(payload);
-    hash.update(lease.proof().lease_id.as_bytes());
-    hash.update(lease.proof().fencing_token.as_bytes());
+    hash.update(proof.lease_id.as_bytes());
+    hash.update(proof.fencing_token.as_bytes());
     format!("reserve-{:x}", hash.finalize())
 }
 

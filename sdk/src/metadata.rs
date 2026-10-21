@@ -595,6 +595,47 @@ impl Connection {
             .collect::<Result<Vec<_>, _>>()
     }
 
+    /// Submit a mutation envelope the caller built and persisted itself.
+    ///
+    /// This exists for clients that freeze one logical request in local storage
+    /// before sending it and must later resend exactly that request under the
+    /// same key. Prefer [`Connection::modify`]: it validates operations and
+    /// parses per-record results. Here the caller owns the envelope shape, but
+    /// the SDK still owns authentication, the lease headers, idempotency and
+    /// the shared error mapping.
+    pub async fn modify_exact(
+        &self,
+        lease: &LeaseProof,
+        body: &Value,
+        idempotency_key: &str,
+    ) -> Result<Value, Error> {
+        if idempotency_key.is_empty()
+            || idempotency_key.len() > 128
+            || !idempotency_key
+                .bytes()
+                .all(|byte| (33..=126).contains(&byte))
+        {
+            return Err(Error::Protocol("invalid idempotency key".into()));
+        }
+        if body.get("operations").and_then(Value::as_array).is_none() {
+            return Err(Error::Protocol(
+                "a mutation envelope needs an operations array".into(),
+            ));
+        }
+        let url = self.cloudkit_url("records/modify")?;
+        let bytes = self
+            .client()
+            .post_json_bytes(&url, body, Some(lease), Some(idempotency_key))
+            .await?;
+        let value: Value = decode(&bytes)?;
+        if value.get("serverErrorCode").is_some() {
+            let failure: crate::ServerFailure = serde_json::from_value(value)
+                .map_err(|error| Error::Protocol(format!("invalid error envelope: {error}")))?;
+            return Err(Error::InBand(Box::new(failure)));
+        }
+        Ok(value)
+    }
+
     /// Read back the receipt of an operation issued with this idempotency key.
     /// This call has no lease dependency, so it works after the lease is gone.
     pub async fn operation_status(&self, operation_id: &str) -> Result<OperationState, Error> {
