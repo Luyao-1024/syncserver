@@ -1,3 +1,7 @@
+[workspace]
+members = ["sdk"]
+resolver = "3"
+
 [package]
 name = "syncserver"
 version = "0.1.0"
