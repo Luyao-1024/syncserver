@@ -1,38 +1,41 @@
 mod common;
 use serde_json::Value;
-use std::{
-    fs,
-    net::TcpListener,
-    os::unix::fs::PermissionsExt,
-    process::{Child, Command, Stdio},
-    time::Duration,
-};
+use std::{fs, net::TcpListener, os::unix::fs::PermissionsExt, time::Duration};
+
+use common::server_process::ServerProcess;
 
 const KEY: &str = "process-test-api-key-012345678901234567890";
 
 struct Process {
-    child: Child,
+    /// Owned through the shared harness: the process group and the
+    /// kernel-level parent-death backstop make sure the server cannot outlive
+    /// the test, even when the test binary is killed outright.
+    child: ServerProcess,
 }
 impl Drop for Process {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.stop();
     }
 }
 fn launch(root: &std::path::Path, address: &str) -> Process {
-    let child = Command::new(env!("CARGO_BIN_EXE_syncserver"))
-        .env_clear()
-        .env("SYNC_BIND", address)
-        .env("SYNC_DATA_DIR", root.join("data"))
-        .env("SYNC_PUBLIC_BASE_URL", format!("http://{address}"))
-        .env("SYNC_API_KEY_FILE", root.join("api.key"))
-        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
-        .env_remove("SYNC_CONTAINER")
-        .env_remove("SYNC_ZONES")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let data = root.join("data");
+    let api_key = root.join("api.key");
+    let signing_key = root.join("signing.key");
+    let base = format!("http://{address}");
+    let child = ServerProcess::spawn(
+        std::path::Path::new(env!("CARGO_BIN_EXE_syncserver")),
+        &[
+            ("SYNC_BIND", address),
+            ("SYNC_DATA_DIR", data.to_str().expect("utf-8 path")),
+            ("SYNC_PUBLIC_BASE_URL", base.as_str()),
+            ("SYNC_API_KEY_FILE", api_key.to_str().expect("utf-8 path")),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                signing_key.to_str().expect("utf-8 path"),
+            ),
+        ],
+    )
+    .unwrap();
     Process { child }
 }
 async fn wait_ready(base: &str, process: &mut Process) -> Value {
@@ -78,7 +81,6 @@ async fn sigkill_recovers_interrupted_start_and_sigterm_drains_and_releases_lock
     let mut first = launch(root.path(), &address);
     let original = wait_ready(&base, &mut first).await;
     first.child.kill().unwrap();
-    first.child.wait().unwrap();
     let mut second = launch(root.path(), &address);
     let restarted = wait_ready(&base, &mut second).await;
     assert_eq!(
@@ -170,7 +172,6 @@ async fn sigkill_during_non_atomic_writes_resumes_receipts_without_duplicate_cha
         }
     }).await.unwrap();
     first.child.kill().unwrap();
-    first.child.wait().unwrap();
     let _ = writing.await.unwrap();
     let mut second = launch(root.path(), &address);
     let restarted = wait_ready(&base, &mut second).await;

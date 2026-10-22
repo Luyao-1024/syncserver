@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+pub mod server_process;
+
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use syncserver::{Config, Server};
 use tempfile::TempDir;

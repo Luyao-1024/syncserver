@@ -1,32 +1,31 @@
 //! Real CLI + HTTP isolation; all passwords/data are synthetic and temporary.
 mod common;
-use common::{Lease, Running};
+use common::{Lease, Running, server_process::run_cli_inherited};
 use serde_json::{Value, json};
-use std::{
-    io::Write,
-    path::Path,
-    process::{Command, Stdio},
-};
+use std::path::Path;
 use syncserver::users::Users;
 use zeroize::Zeroizing;
 const PASSWORD: &str = "synthetic-password-for-tests";
 const CK: &str = "/database/1/com.apple.photos.cloud/production/private";
 fn cli(root: &Path, args: &[&str], password: Option<&str>) -> std::process::Output {
     let _config = common::config(root);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_syncserver"))
-        .args(args)
-        .env("SYNC_DATA_DIR", root.join("data"))
-        .env("SYNC_API_KEY_FILE", root.join("api.key"))
-        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    if let Some(password) = password {
-        writeln!(child.stdin.take().unwrap(), "{password}").unwrap();
-    }
-    child.wait_with_output().unwrap()
+    let data = root.join("data");
+    let api_key = root.join("api.key");
+    let signing_key = root.join("signing.key");
+    run_cli_inherited(
+        std::path::Path::new(env!("CARGO_BIN_EXE_syncserver")),
+        args,
+        &[
+            ("SYNC_DATA_DIR", data.to_str().expect("utf-8 path")),
+            ("SYNC_API_KEY_FILE", api_key.to_str().expect("utf-8 path")),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                signing_key.to_str().expect("utf-8 path"),
+            ),
+        ],
+        password,
+    )
+    .unwrap()
 }
 fn create(root: &Path, name: &str, adopt: bool) {
     let mut args = vec!["users", "create", name, "--password-stdin"];

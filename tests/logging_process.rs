@@ -1,12 +1,8 @@
+mod common;
+
+use common::server_process::{ServerProcess, run_cli};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    net::TcpListener,
-    os::unix::fs::PermissionsExt,
-    path::Path,
-    process::{Child, Command, Stdio},
-    time::Duration,
-};
+use std::{fs, net::TcpListener, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
 const KEY: &str = "logging-test-api-key-012345678901234567890";
 const PASSWORD: &str = "never-log-this-password";
@@ -23,14 +19,16 @@ fn write_keys(root: &Path) {
 }
 
 struct Instance {
-    child: Child,
+    /// Owned through the shared harness: the process group and the
+    /// kernel-level parent-death backstop make sure the server cannot outlive
+    /// the test, even when the test binary is killed outright.
+    child: ServerProcess,
     base: String,
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.child.stop();
     }
 }
 
@@ -41,22 +39,28 @@ async fn start(root: &Path, level: &str, payload: &str) -> Instance {
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         socket.local_addr().unwrap().to_string()
     };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_syncserver"))
-        .env_clear()
-        .env("SYNC_BIND", &address)
-        .env("SYNC_DATA_DIR", root.join("data"))
-        .env("SYNC_PUBLIC_BASE_URL", format!("http://{address}"))
-        .env("SYNC_API_KEY_FILE", root.join("api.key"))
-        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
-        .env("SYNC_LOG_LEVEL", level)
-        .env("SYNC_LOG_PAYLOAD", payload)
-        .env("SYNC_LOG_RETENTION_RAW_SECS", "1")
-        .env("SYNC_LOG_ARCHIVE_MAX_BYTES", "1048576")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let data = root.join("data");
+    let api_key = root.join("api.key");
+    let signing_key = root.join("signing.key");
     let base = format!("http://{address}");
+    let mut child = ServerProcess::spawn(
+        std::path::Path::new(env!("CARGO_BIN_EXE_syncserver")),
+        &[
+            ("SYNC_BIND", address.as_str()),
+            ("SYNC_DATA_DIR", data.to_str().expect("utf-8 path")),
+            ("SYNC_PUBLIC_BASE_URL", base.as_str()),
+            ("SYNC_API_KEY_FILE", api_key.to_str().expect("utf-8 path")),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                signing_key.to_str().expect("utf-8 path"),
+            ),
+            ("SYNC_LOG_LEVEL", level),
+            ("SYNC_LOG_PAYLOAD", payload),
+            ("SYNC_LOG_RETENTION_RAW_SECS", "1"),
+            ("SYNC_LOG_ARCHIVE_MAX_BYTES", "1048576"),
+        ],
+    )
+    .unwrap();
     let client = reqwest::Client::new();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -119,28 +123,28 @@ async fn drive_traffic(instance: &Instance) -> Value {
 
 /// Stops the service through the normal signal path so shutdown also flushes the logs.
 fn stop(mut instance: Instance) {
-    unsafe {
-        libc::kill(instance.child.id() as i32, libc::SIGTERM);
-    }
+    instance.child.signal(libc::SIGTERM).unwrap();
     let status = instance.child.wait().unwrap();
     assert!(status.success(), "graceful shutdown must exit successfully");
 }
 
 fn read_logs(root: &Path, arguments: &[&str]) -> Vec<Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_syncserver"))
-        .env_clear()
-        .env("SYNC_DATA_DIR", root)
-        .env(
-            "SYNC_SIGNING_KEY_FILE",
-            root.parent().unwrap().join("signing.key"),
-        )
-        .arg("logs")
-        .arg("--json")
-        .arg("--limit")
-        .arg("2000")
-        .args(arguments)
-        .output()
-        .unwrap();
+    let signing_key = root.parent().unwrap().join("signing.key");
+    let mut argv = vec!["logs", "--json", "--limit", "2000"];
+    argv.extend_from_slice(arguments);
+    let output = run_cli(
+        std::path::Path::new(env!("CARGO_BIN_EXE_syncserver")),
+        &argv,
+        &[
+            ("SYNC_DATA_DIR", root.to_str().expect("utf-8 path")),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                signing_key.to_str().expect("utf-8 path"),
+            ),
+        ],
+        None,
+    )
+    .unwrap();
     assert!(
         output.status.success(),
         "logs command failed: {}",
@@ -307,50 +311,51 @@ async fn start_with_account(root: &Path) -> (Instance, String) {
     fs::remove_file(root.join("api.key")).unwrap();
     // The account has to exist before the server starts: the CLI needs the data
     // directory lock, and the running service holds it.
-    let created = Command::new(env!("CARGO_BIN_EXE_syncserver"))
-        .env_clear()
-        .env("SYNC_DATA_DIR", root.join("data"))
-        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
-        .args(["users", "create", "photoviewer", "--password-stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    {
-        use std::io::Write;
-        let mut child = created;
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(format!("{PASSWORD}\n").as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "account creation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let created = run_cli(
+        std::path::Path::new(env!("CARGO_BIN_EXE_syncserver")),
+        &["users", "create", "photoviewer", "--password-stdin"],
+        &[
+            (
+                "SYNC_DATA_DIR",
+                root.join("data").to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                root.join("signing.key").to_str().expect("utf-8 path"),
+            ),
+        ],
+        Some(PASSWORD),
+    )
+    .unwrap();
+    assert!(
+        created.status.success(),
+        "account creation failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
 
     let address = {
         let socket = TcpListener::bind("127.0.0.1:0").unwrap();
         socket.local_addr().unwrap().to_string()
     };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_syncserver"))
-        .env_clear()
-        .env("SYNC_BIND", &address)
-        .env("SYNC_DATA_DIR", root.join("data"))
-        .env("SYNC_PUBLIC_BASE_URL", format!("http://{address}"))
-        .env("SYNC_SIGNING_KEY_FILE", root.join("signing.key"))
-        .env("SYNC_LOG_LEVEL", "info")
-        .env("SYNC_LOG_PERSIST_LEVEL", "info")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
     let base = format!("http://{address}");
+    let mut child = ServerProcess::spawn(
+        std::path::Path::new(env!("CARGO_BIN_EXE_syncserver")),
+        &[
+            ("SYNC_BIND", address.as_str()),
+            (
+                "SYNC_DATA_DIR",
+                root.join("data").to_str().expect("utf-8 path"),
+            ),
+            ("SYNC_PUBLIC_BASE_URL", base.as_str()),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                root.join("signing.key").to_str().expect("utf-8 path"),
+            ),
+            ("SYNC_LOG_LEVEL", "info"),
+            ("SYNC_LOG_PERSIST_LEVEL", "info"),
+        ],
+    )
+    .unwrap();
     let client = reqwest::Client::new();
     let token = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
