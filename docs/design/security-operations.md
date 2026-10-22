@@ -110,8 +110,14 @@ leaseToken 是秘密，与 Bearer/资源凭证不同域；deviceId 不足以授�
 
 ## 2026-10-16：日志落库与留存
 
-`logs.sqlite` 与元数据库分离：未压缩窗口内的日志原样保留且不设条数或字节上限，超过 `SYNC_LOG_RETENTION_RAW_SECS` 的记录压缩成 gzip NDJSON 段，压缩总量受 `SYNC_LOG_ARCHIVE_MAX_BYTES` 约束，超限时先整段删除最旧段并留 `warn`。归档段带 SHA-256 校验和，读取时校验而非静默跳过。
+`logs.sqlite` 与元数据库分离：未压缩窗口内的日志原样保留且已落库记录不按条数裁剪，新增写入受全库物理预算约束，超过 `SYNC_LOG_RETENTION_RAW_SECS` 的记录压缩成 gzip NDJSON 段，压缩总量受 `SYNC_LOG_ARCHIVE_MAX_BYTES` 约束，超限时先整段删除最旧段并留 `warn`。归档段带 SHA-256 校验和，读取时校验而非静默跳过。
 
 日志库、归档 payload 与数据目录同处 0700 目录/0600 文件的私有权限内，备份须按敏感数据处理，并沿用先停服务再完整备份数据目录的流程。落库队列有界，满时丢最新记录并计数，不阻塞请求线程；进程崩溃最多丢失最后一次提交之后的日志，日志不承担同步真值。
 
 `GET /v1/metrics` 的 `metrics.logging` 只读增量计数器，不打开日志库；`syncserver logs` 只读查询不取数据目录锁，可在服务运行时执行。日志不改变同步 token、快照、租约、资源或 database generation 的语义。开发环境推荐 `SYNC_LOG_LEVEL=debug` 加 `SYNC_LOG_PAYLOAD=on` 以详细记录同步各阶段数据，生产保持默认 `info` 与 `off`。
+
+## 2026-10-23 公网加固
+
+认证、来源限流和角色即时生效见[认证契约](../contracts/authentication.md)；物理预算与低水位见[配额契约](../contracts/storage-quota.md)。默认日志数据库 256 MiB、每账户元数据 1 GiB、认证目录 64 MiB 的物理包络拒绝新增增长，不自动删除已有真值。日志原始窗口保留规则在[日志契约](../contracts/logging.md)同步更新。最终部署必须再限制数据卷与 WAL 的合计空间，并使用专用无登录权限服务用户、ProtectHome、只读程序及最小可写数据路径，避免开放桌面用户整个 home。
+
+管理员临时密码应轮换为唯一随机密码，旧会话随密码重设撤销；2 小时绝对会话期限不能被网页退出时提前清空 Bearer 绕过。公网穿透继续只复用 HTTPS 443，frp 控制及代理端口只监听阿里云回环。具体本次结果见[安全修复实施记录](security-remediation.md)。

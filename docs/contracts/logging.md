@@ -14,6 +14,7 @@
 | SYNC_LOG_PAYLOAD | `off` | 开启后（且等级含 `debug`）才渲染记录/相册内容字段 |
 | SYNC_LOG_RETENTION_RAW_SECS | `86400` | 未压缩窗口阈值，范围 1..2592000 |
 | SYNC_LOG_ARCHIVE_MAX_BYTES | `1073741824` | 压缩段总量上限（1 GiB），范围 4096..1 TiB |
+| SYNC_LOG_DATABASE_MAX_BYTES | `268435456` | SQLite 主库紧急物理上限（256 MiB），范围 1 MiB..1 TiB；超限拒绝新增，不裁剪已有近期记录 |
 | SYNC_LOG_QUEUE_CAPACITY | `4096` | 待落库队列容量，范围 16..1048576 |
 
 等级策略：
@@ -37,8 +38,8 @@
 - v1 → v2 迁移在打开时单事务执行（`ALTER TABLE log_events ADD COLUMN user_id` + 索引），既有记录保留、`user_id` 读作 NULL；旧版二进制拒绝打开 v2 库（`SchemaUnsupported`）。
 
 - 达到 `SYNC_LOG_RETENTION_RAW_SECS` 的记录在下一次归档 pass 压缩成 gzip NDJSON 段，并在同一事务内从 log_events 删除，因此一条记录不会同时出现在两处。
-- 阈值内的记录（当天）始终原样保留，不裁剪、不设条数或字节上限。
-- 只有压缩段受 `SYNC_LOG_ARCHIVE_MAX_BYTES` 约束：超过上限时按 `first_ts_ms` 从最旧段开始整段删除，直到满足上限；被删段不可再读，并留下 `warn` 记录。
+- 阈值内的记录（当天）始终原样保留，不按条数裁剪；新增写入受全库物理预算约束。
+- 压缩段另受 `SYNC_LOG_ARCHIVE_MAX_BYTES` 约束：超过上限时按 `first_ts_ms` 从最旧段开始整段删除，直到满足上限；被删段不可再读，并留下 `warn` 记录。
 - 归档 pass 每 5 秒检查一次，启动后立即执行一次；单批最多 4096 行。仪表计数用增量维护，稳态不做全表统计。
 - 记录按批提交（≥512 行或 ≥1 秒），`synchronous=NORMAL`：进程崩溃最多丢失最后一次提交之后的日志，数据库结构不损坏。日志不是同步真值，允许这一有界损失窗口。
 - 段的 `checksum` 是 payload 的 SHA-256；读取时校验，损坏的段返回错误而不是静默跳过。gzip member 也可用标准工具直接查看。
@@ -101,3 +102,8 @@
 | L08 | 非法等级/格式/阈值/队列容量拒绝启动，默认值与继承规则固定 | tests/configuration.rs 的 `logging_configuration_defaults_bounds_and_detail_switch` |
 | L09 | `GET /v1/admin/logs` 只允许管理员；过滤参数合法时被接受，写错的边界与未知参数返回 400；未落库时报 `persisted=false`；`requestId` 与 `archive` 能跨压缩段定位同一次请求 | tests/admin_http.rs 的 `the_log_search_validates_its_filters_and_reports_an_unpersisted_deployment`，tests/logging.rs 的 `a_request_can_be_traced_across_the_compressed_boundary` |
 | L10 | 认证请求的 `request completed` 与 `session issued` 带同一 `user_id`，未认证请求不归属任何账户；`user_id` 不受 payload 开关影响而 `record_name` 仍脱敏；按账户过滤跨压缩段；v1 库迁移到 v2 且旧记录保留 | tests/logging_process.rs 的 `an_authenticated_request_is_attributed_to_its_account`，tests/logging.rs 的 `an_account_id_survives_without_detail_logging_but_a_record_name_does_not`、`an_account_filter_spans_the_compressed_boundary`、`a_previous_version_database_is_migrated_and_keeps_every_record` |
+
+
+## 2026-10-23 公网安全修复：物理容量边界
+
+原始保留窗口内已接收的日志仍不按条数裁剪；物理安全预算通过 `SYNC_LOG_DATABASE_MAX_BYTES`（默认 256 MiB）限制日志 SQLite 增长。预算耗尽时拒绝新增落库、记录 writeFailures，不删除现有近期日志，不阻塞同步事务。归档仍受自身上限约束；部署再以独立受限数据卷限制数据库、WAL 和日志的合计物理占用。此安全预算是本次用户授权修复引入的契约更新，不继续承诺物理磁盘无限增长。

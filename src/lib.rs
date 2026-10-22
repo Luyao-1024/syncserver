@@ -120,12 +120,16 @@ impl Server {
         // open, so the first person to open the dashboard sees the last quarter hour
         // rather than an empty chart.
         let sampling = tokio::spawn(sampling_loop(state.clone()));
-        let result = axum::serve(listener, self.router())
-            .with_graceful_shutdown(async move {
-                shutdown.await;
-                state.ready.store(false, Ordering::Release);
-            })
-            .await;
+        let result = axum::serve(
+            listener,
+            self.router()
+                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            state.ready.store(false, Ordering::Release);
+        })
+        .await;
         // Sampling stops before the state it reads is torn down, so the task never
         // outlives the counters it samples.
         sampling.abort();

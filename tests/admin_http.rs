@@ -573,6 +573,7 @@ async fn the_last_administrator_cannot_be_demoted_or_self_disabled() {
 
     // Promoting the ordinary account is what makes the demotion possible, so the
     // refusal above was about being the last administrator, not about the target.
+    own_quota(&deployment, &deployment.user).await; // initialize the ordinary account cache
     let (status, body) = admin_post(
         &deployment,
         &format!("/v1/admin/users/{}/role", deployment.user_id),
@@ -588,9 +589,27 @@ async fn the_last_administrator_cannot_be_demoted_or_self_disabled() {
     .await;
     assert_eq!(status, 200, "{body}");
     let (status, body) = admin_get(&deployment, "/v1/admin/users").await;
+    assert_eq!(status, 403, "{body}");
+    let fresh = login(&deployment.app, "admin1", PASSWORD).await;
+    let (status, _) = get(
+        fresh["accessToken"].as_str().unwrap(),
+        &deployment,
+        "/v1/admin/users",
+    )
+    .await;
+    assert_eq!(status, 403);
+    // Promotion also takes effect for an account whose store was already cached.
+    let (status, body) = get(&deployment.user, &deployment, "/v1/admin/users").await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(row(&body, &deployment.user_id)["role"], "admin");
     assert_eq!(row(&body, &deployment.admin_id)["role"], "user");
+    assert_eq!(
+        get(&deployment.user, &deployment, "/v1/storage").await.0,
+        403
+    );
+    let (_, caps) = get(&deployment.user, &deployment, "/v1/capabilities").await;
+    assert_eq!(caps["authentication"]["user"]["role"], "admin");
+    assert_eq!(caps["authentication"]["sessionTTLSeconds"], 7200);
 }
 
 #[tokio::test]

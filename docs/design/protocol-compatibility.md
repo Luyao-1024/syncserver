@@ -194,3 +194,10 @@ snapshots/incrementalChanges/assetUpload/assetDownload/photoPublication=false。
 ## 用户名密码扩展
 
 `POST /v1/auth/login` 和 `POST /v1/auth/logout`、用户身份能力和账户模式资源双重认证见[认证契约](../contracts/authentication.md)。其余记录/资源/快照/租约语义在已选用户上下文内复用；不同用户不能交叉使用 token、签名、资源、操作回执或租约。没有用户的旧模式仍可使用原 API key；创建用户后需要新客户端登录会话，旧 key 不绕过账户验证。此扩展不提供共享数据库、组织 ACL 或 Apple 登录。
+
+## 2026-10-23 安全修复兼容性
+
+- 角色从每次会话认证读取，角色变更从下一请求生效；管理员会话最长 2 小时，普通用户仍为 30 天。
+- 登录来源配额不再以同一用户名跨所有来源共享；正确密码不受该账户失败计数阻断。来源请求上限仍可返回 LOGIN_RATE_LIMITED。
+- 存储新增 507 PHYSICAL_STORAGE_QUOTA_EXCEEDED / INSUFFICIENT_STORAGE；与原逻辑配额 409 STORAGE_QUOTA_EXCEEDED 分开。
+- 未修改 record revision、同步 token、租约/fence、SHA-256 或数据库 generation 的语义；物理安全限制不授权删除已有照片/历史。

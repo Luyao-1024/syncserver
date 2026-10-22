@@ -77,6 +77,15 @@ impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         match error {
             Error::Protocol(error) => Self::from(error),
+            Error::Database(rusqlite::Error::SqliteFailure(ref e, _))
+                if e.code == rusqlite::ErrorCode::DiskFull =>
+            {
+                Self::new(
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "INSUFFICIENT_STORAGE",
+                    "Database storage capacity reached",
+                )
+            }
             Error::Busy => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SERVER_BUSY",

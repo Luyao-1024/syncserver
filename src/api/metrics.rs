@@ -41,11 +41,12 @@ pub(super) fn snapshot(state: &AppState) -> Value {
 
 pub(super) async fn read(
     axum::extract::Extension(state): axum::extract::Extension<Arc<AppState>>,
+    axum::extract::Extension(current): axum::extract::Extension<super::CurrentUser>,
 ) -> Response {
     // The snapshot covers the whole process and every account. An API key deployment
     // keeps its documented monitoring access; once accounts exist, only an
     // administrator may read process-wide counters.
-    if let Some(user) = state.user.as_ref()
+    if let Some(user) = current.0.as_ref()
         && !user.role.is_admin()
     {
         return super::error::ApiError::new(

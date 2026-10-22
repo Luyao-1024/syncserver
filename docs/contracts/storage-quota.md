@@ -44,3 +44,11 @@
 默认与配置边界；精确达到上限及超额；批量/并发申请无超售；幂等不重复计量；失败/过期/失锁和重启释放预留；相同内容的独立文件重复计量；复用资源不能绕过记录事务配额；删除释放逻辑空间；同大小更新/缩小与降低上限保留下载；不同用户相同内容独立计量；无认证及指定其他用户被拒绝；查询不改变同步 token、不读取正文；图片/视频/未知资源混合计量，缩略图归属和共享引用、重命名/删除、重启、账户隔离及分类之和等于 usedBytes。
 
 关联：[资源协议](assets.md)、[认证](authentication.md)、[兼容矩阵](../design/protocol-compatibility.md)、[恢复](../design/concurrency-recovery.md)。
+
+## 物理安全预算（2026-10-23）
+
+逻辑 usedBytes 的原有含义保持不变。新增 `SYNC_USER_PHYSICAL_STORAGE_QUOTA_BYTES`，每账户默认 40000000000 字节，独立限制全部已发布对象（含未引用/历史对象）、仍在接收/准备发布的资源、有效上传预留及真实存在的隔离对象。申请上传时在同一元数据事务计入完整 expectedSize，拒绝增长返回 HTTP 507 `PHYSICAL_STORAGE_QUOTA_EXCEEDED`；真实磁盘不足以保留 `SYNC_MIN_FREE_DISK_BYTES`（默认 1 GiB）时返回 507 `INSUFFICIENT_STORAGE`。正文开始接收前再次检查磁盘余量。
+
+按可信对象元数据计量并按摘要去重，不读取/重新 hash 正文；仅对异常隔离对象执行身份路径的 stat。Receiving/PublishPrepared 不因租约失效立即放弃容量保护。成功发布后以实际资产元数据持续计量；失败/重启沿既有清理恢复协议释放暂存，普通重启不能绕过对象预算。已有对象不自动删除，无新增 GC。
+
+每用户 metadata.sqlite 默认 1 GiB 物理预算（`SYNC_METADATA_MAX_BYTES`）；认证目录默认 64 MiB。达到 SQLite 上限时拒绝新增长，不裁剪记录、版本或墓碑。已有数据库大于新预算时明确拒绝配置，不能冒充缩容成功。WAL 定期 checkpoint；最终合计物理硬边界由部署的独立数据卷保障，避免仅靠文件大小和瞬时空闲量处理所有并发。

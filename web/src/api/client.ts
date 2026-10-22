@@ -3,9 +3,9 @@
  *
  * Two rules hold everywhere below:
  *
- *  1. The session is a Bearer token held in memory and mirrored to sessionStorage, so
- *     closing the tab ends the session. It is never written to localStorage and no
- *     cookie is ever set — with no cookie there is no CSRF surface.
+ *  1. The Bearer token is held in memory and mirrored to sessionStorage. Closing
+ *     the tab clears browser storage; server authorization ends on logout or expiry.
+ *     Requests explicitly attach the token and never use automatic cookie auth.
  *  2. Errors carry the server's own error code. The UI shows the server's `reason`
  *     where it is meaningful and falls back to a generic line otherwise, rather than
  *     inventing its own explanation of a failure it does not understand.
@@ -181,7 +181,13 @@ export async function logout(): Promise<void> {
   clearSession()
   if (!active) return
   try {
-    await api.post('/v1/auth/logout')
+    const response = await fetch('/v1/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${active.token}` },
+      cache: 'no-store',
+      credentials: 'omit',
+    })
+    if (!response.ok) throw await readError(response)
   } catch {
     // Signing out locally matters more than the server acknowledging it.
   }

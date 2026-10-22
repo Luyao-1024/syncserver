@@ -122,3 +122,8 @@ schema v7 为 `photo_bindings` 增加由 `CPLAsset.isTrashed` 派生的 `trashed
 空间分类查询把当前 ASSETID 引用与同账户资产元数据、同 zone 的 photo_bindings 关联，原始资源 MIME 优先，无法分类时按当前虚拟路径扩展名划分图片/视频/其他。缩略图及关联资源跟随文件原始资源的分类；同一缩略图的多个引用各计入对应文件类别。三个分类大小之和为逻辑已用，不新增 schema、持久计数器或正文扫描。具体字段与扩展名规则见[配额查询契约](../contracts/storage-quota.md)。
 
 配额查询的实现不得让 SQLite 对每个 JSON 字段重新扫描资产表：存储线程先读取当前记录字段并解析 ASSETID 引用，再按 `(namespace, asset_id)` 主键批量读取资产元数据。该路径只访问元数据，不读取或重新哈希对象正文。
+
+
+## 2026-10-23 安全修复
+
+本轮不新增媒体 schema 或重置 generation；角色改为请求身份，上传按元数据事务检查独立物理预算，SQLite 使用物理增长上限，现有照片与历史不自动裁剪。契约与回归项见[安全修复实施记录](security-remediation.md)、[认证契约](../contracts/authentication.md)和[配额契约](../contracts/storage-quota.md)。实际执行结果另列，不以本段代表部署完成。

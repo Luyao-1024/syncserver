@@ -81,3 +81,43 @@ impl DataDirectory {
         })
     }
 }
+
+/// Enforce a storage envelope without trimming any existing database rows.
+/// The WAL is checkpointed frequently; deployment also provides a filesystem cap.
+pub(crate) fn cap_database(connection: &rusqlite::Connection, bytes: u64) -> Result<()> {
+    let size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
+    connection.pragma_update(
+        None,
+        "max_page_count",
+        i64::try_from((bytes / size as u64).max(1)).map_err(|_| Error::RecoveryFailed)?,
+    )?;
+    let actual: i64 = connection.pragma_query_value(None, "max_page_count", |r| r.get(0))?;
+    if u128::from(actual as u64) * u128::from(size as u64) > u128::from(bytes) {
+        return Err(Error::Config(
+            "database cap is smaller than the existing database",
+        ));
+    }
+    connection.pragma_update(None, "wal_autocheckpoint", 256)?;
+    Ok(())
+}
+pub(crate) fn check_free_space(root: &Path, required: u64, reserve: u64) -> Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let path = CString::new(root.as_os_str().as_bytes()).map_err(|_| Error::RecoveryFailed)?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: path is NUL-terminated and stat points to writable storage.
+    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: a successful statvfs initialized the structure.
+    let stat = unsafe { stat.assume_init() };
+    let available = u128::from(stat.f_bavail) * u128::from(stat.f_frsize);
+    if available < u128::from(required) + u128::from(reserve) {
+        return Err(crate::domain::records::Failure::new(
+            507,
+            "INSUFFICIENT_STORAGE",
+            "Storage free-space reserve would be exhausted",
+        )
+        .into());
+    }
+    Ok(())
+}

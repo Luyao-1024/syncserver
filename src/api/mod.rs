@@ -32,9 +32,14 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 use uuid::Uuid;
 
+#[derive(Clone, Default)]
+pub(super) struct CurrentUser(pub Option<crate::users::User>);
+
 pub(crate) struct AppState {
     pub authority: Option<Arc<crate::auth::Authority>>,
-    pub user: Option<crate::users::User>,
+    // Storage identity only; authorization always uses the fresh request identity.
+    pub account_id: Option<String>,
+    pub legacy: bool,
     pub config: Config,
     pub credentials: Credentials,
     pub store: Store,
@@ -114,7 +119,8 @@ impl AppState {
         let capacity = config.limits.db_queue_capacity;
         Self {
             authority: None,
-            user: None,
+            account_id: None,
+            legacy: true,
             original_uploads: Arc::new(Semaphore::new(
                 (config.limits.upload_concurrency - config.limits.upload_concurrency / 2).max(1),
             )),
@@ -156,11 +162,11 @@ impl AppState {
 /// resource, lease and console APIs alike, so there is no path by which an
 /// administrator could place or read a photo.
 async fn deny_admin_namespace(
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(user): Extension<CurrentUser>,
     request: Request,
     next: Next,
 ) -> Response {
-    if state.user.as_ref().is_some_and(|user| user.role.is_admin()) {
+    if user.0.as_ref().is_some_and(|user| user.role.is_admin()) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
             "ADMIN_CANNOT_SYNC",
@@ -454,9 +460,11 @@ async fn authenticate(
     };
     let selected = if let Some(token) = token.as_deref() {
         match authority.resolve(token).await {
-            Ok(Some(context)) => Some(context),
+            Ok(Some((context, user))) => Some((context, CurrentUser(Some(user)))),
             Ok(None) => match authority.legacy_allowed().await {
-                Ok(true) if state.credentials.authenticate(token) => Some(state.clone()),
+                Ok(true) if state.credentials.authenticate(token) => {
+                    Some((state.clone(), CurrentUser(None)))
+                }
                 Ok(_) => None,
                 Err(e) => return ApiError::from(e).into_response(),
             },
@@ -468,7 +476,7 @@ async fn authenticate(
                 if request.uri().path().ends_with("/content")
                     && assets::capability(&state, &request).is_ok() =>
             {
-                Some(state.clone())
+                Some((state.clone(), CurrentUser(None)))
             }
             Ok(_) => None,
             Err(e) => return ApiError::from(e).into_response(),
@@ -476,10 +484,10 @@ async fn authenticate(
     } else {
         None
     };
-    let Some(state) = selected else {
+    let Some((state, user)) = selected else {
         return denied();
     };
-    if let Some(user) = &state.user {
+    if let Some(user) = &user.0 {
         state.requests.fetch_add(1, Ordering::Relaxed);
         // Handed to `response_metadata`, which cannot see the resolved session itself.
         if let Some(acting_user) = request.extensions().get::<ActingUser>() {
@@ -487,6 +495,7 @@ async fn authenticate(
         }
     }
     request.extensions_mut().insert(state.clone());
+    request.extensions_mut().insert(user);
     let monitoring = request.uri().path() == "/v1/metrics";
     if !monitoring && (!state.ready.load(Ordering::Acquire) || !state.store.accepting()) {
         return ApiError::new(
@@ -549,16 +558,19 @@ async fn ready(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
-async fn capabilities(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
+async fn capabilities(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(user): Extension<CurrentUser>,
+) -> Json<Value> {
     // An administrator has no photo library, so it is offered no synchronization
     // capability at all. Advertising them and then refusing the calls would leave a
     // client guessing which half of the contract to believe.
-    let administrator = state.user.as_ref().is_some_and(|user| user.role.is_admin());
+    let administrator = user.0.as_ref().is_some_and(|user| user.role.is_admin());
     let syncs = !administrator;
     Json(json!({
         "service": "syncserver", "version": env!("CARGO_PKG_VERSION"), "stage": "M4",
         "namespace": state.config.namespace, "zones": state.config.zones,
-        "authentication":{"mode":if state.user.is_some(){"username_password"}else{"api_key"},"user":state.user,"resourceBearerRequired":state.user.is_some(),"sessionTTLSeconds":crate::users::SESSION_TTL_SECONDS},
+        "authentication":{"mode":if user.0.is_some(){"username_password"}else{"api_key"},"user":user.0,"resourceBearerRequired":user.0.is_some(),"sessionTTLSeconds":if administrator {crate::users::ADMIN_SESSION_TTL_SECONDS} else {crate::users::SESSION_TTL_SECONDS}},
         "publicBaseURL": state.config.public_base_url.as_str(),
         "databaseGeneration": state.store.metadata().database_generation,
         "schemaVersion": state.store.metadata().schema_version,

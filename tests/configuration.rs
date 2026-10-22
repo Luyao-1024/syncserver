@@ -314,3 +314,35 @@ async fn the_console_is_served_from_the_binary_and_carries_no_account_data() {
         .unwrap();
     assert_eq!(anonymous.status(), 401);
 }
+
+#[test]
+fn security_storage_envelopes_and_trusted_proxy_addresses_are_validated() {
+    let root = tempfile::tempdir().unwrap();
+    let config = common::config(root.path());
+    assert_eq!(
+        config.limits().user_physical_storage_quota_bytes,
+        40_000_000_000
+    );
+    assert_eq!(config.limits().metadata_max_bytes, 1_073_741_824);
+    assert_eq!(config.logging().database_max_bytes, 268_435_456);
+    // Validate via the public deterministic configuration parser.
+    for (key, value) in [
+        ("SYNC_USER_PHYSICAL_STORAGE_QUOTA_BYTES", "0"),
+        ("SYNC_METADATA_MAX_BYTES", "4096"),
+        ("SYNC_LOG_DATABASE_MAX_BYTES", "0"),
+        ("SYNC_TRUSTED_PROXY_IPS", "not-an-IP"),
+    ] {
+        let mut values = std::collections::BTreeMap::from([
+            (
+                "SYNC_DATA_DIR".to_owned(),
+                root.path().join("data").display().to_string(),
+            ),
+            (
+                "SYNC_SIGNING_KEY_FILE".to_owned(),
+                root.path().join("signing.key").display().to_string(),
+            ),
+        ]);
+        values.insert(key.to_owned(), value.to_owned());
+        assert!(syncserver::Config::from_pairs(values).is_err(), "{key}");
+    }
+}

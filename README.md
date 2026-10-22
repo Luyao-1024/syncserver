@@ -28,35 +28,35 @@ CloudKit 基址为 `/database/1/{container}/production/private`。账户模式�
 
 本机验证工具链为 Rust 1.98.0，edition 2024，Cargo 声明最低版本 1.88（最低版本由独立 CI job 构建/测试，具体结果以对应提交为准）。Cargo.lock 已提交；SQLite 通过 bundled 构建。当前使用 Unix 权限和信号接口，在 Linux 上验证；无需 GTK 或相邻 PhotoViewer 工程。
 
-以下创建独立的本地试运行目录和随机签名密钥，不输出密钥。初始化命令使用排他创建，重复执行不会覆盖已有密钥。
+后续在本仓库启动或重启服务器统一使用根目录的 [start.sh](start.sh)：
 
 ```bash
-umask 077
-export SYNC_LOCAL_DIR="$PWD/local-run"
-mkdir -p "$SYNC_LOCAL_DIR"
-python - "$SYNC_LOCAL_DIR" <<'PY'
-import base64, os, pathlib, secrets, sys
-root = pathlib.Path(sys.argv[1])
-for name, text in [
-    ('signing.key', base64.b64encode(secrets.token_bytes(32)).decode()),
-]:
-    with os.fdopen(os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
-        stream.write(text + '\n')
-PY
-export SYNC_DATA_DIR="$SYNC_LOCAL_DIR/data"
-unset SYNC_API_KEY_FILE
-export SYNC_SIGNING_KEY_FILE="$SYNC_LOCAL_DIR/signing.key"
+./start.sh          # 默认 dev
+./start.sh dev      # debug 构建，默认 debug 日志与 payload=on
+./start.sh release  # release 构建，默认 info 日志与 payload=off
+```
+
+需要 Linux、Python 3（支持 pidfd）和 Rust/Cargo。脚本可从任意目录调用，工作目录固定到仓库根目录。每次先执行 `cargo build --locked --bin syncserver`（release 增加 `--release`）；编译失败保留旧实例。成功后识别本仓库 Cargo target 下 debug/release 的服务器进程（包括直接手动启动的实例），发送 SIGTERM 并等待最多 75 秒，退出后以前台方式启动新实例。超时中止，不强杀；不会停止 `users`/`logs` 管理命令或其他路径安装的服务。并发调用会串行完成构建与重启，后一次调用重启前一次实例。Ctrl+C 停止当前服务，启动失败会返回非零退出码。
+
+首次自动创建 `local-run/signing.key`（0600 随机密钥），默认数据目录为 `local-run/data`；重启和切换模式均复用数据与密钥。脚本继承已导出的 `SYNC_*` 环境变量，不自动读取 `.env`；显式的 `SYNC_DATA_DIR`、`SYNC_SIGNING_KEY_FILE`、日志配置优先。例如：
+
+```bash
+SYNC_BIND=127.0.0.1:8790 ./start.sh release
+```
+
+脚本使用仓库已提交的 `web/dist` 内嵌控制台资源；修改前端后先在 `web` 目录执行 `npm ci && npm run build`，再用脚本重启。
+
+首次启动后在另一终端创建用户（这是管理命令，不是服务器启动入口）：
+
+```bash
+export SYNC_DATA_DIR="$PWD/local-run/data"
+export SYNC_SIGNING_KEY_FILE="$PWD/local-run/signing.key"
 cargo run --locked -- users create alice
-cargo run --locked
 ```
 
-开发阶段建议把日志降到 debug 并打开内容字段：元数据轮询的返回条数与 `moreComing`、变化页数、租约 renew/check/phase/status 会逐条打印，payload 开启后还带上记录操作预览，同步各阶段明细同时进入终端和 `local-run/data/logs.sqlite`。
+开发模式默认开启详细日志和内容字段，日志同时进入终端和数据目录中的 `logs.sqlite`。release 模式默认关闭 payload；显式环境变量可以覆盖模式默认值。
 
-```bash
-export SYNC_LOG_LEVEL=debug SYNC_LOG_PAYLOAD=on
-```
-
-留存阈值默认「1 天内的日志原样保存、超过 1 天压缩」，压缩总量默认上限 1 GiB，可用 `SYNC_LOG_RETENTION_RAW_SECS` 与 `SYNC_LOG_ARCHIVE_MAX_BYTES` 调整；当天窗口不设条数或字节上限。生产环境保持 `SYNC_LOG_LEVEL=info` 与 `SYNC_LOG_PAYLOAD=off`，不要长期开启 payload。
+留存阈值默认「1 天内的日志原样保存、超过 1 天压缩」，压缩总量默认上限 1 GiB，可用 `SYNC_LOG_RETENTION_RAW_SECS` 与 `SYNC_LOG_ARCHIVE_MAX_BYTES` 调整；当天窗口已落库记录不按条数裁剪，新增写入受全库物理预算约束。生产环境保持 `SYNC_LOG_LEVEL=info` 与 `SYNC_LOG_PAYLOAD=off`，不要长期开启 payload。
 
 查询已落库的日志：`syncserver logs` 只读打开日志库，不取数据目录锁，可在服务运行时执行；`--level`/`--since`/`--until`/`--contains`/`--request-id`/`--limit` 过滤，`--archive` 一并读取压缩段，`--json` 逐行输出。沿用上面的环境变量即可（需要 `SYNC_DATA_DIR` 与 `SYNC_SIGNING_KEY_FILE` 存在，后者只用于配置校验，不读取内容）：
 

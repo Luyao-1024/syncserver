@@ -134,6 +134,7 @@ impl Store {
                     let mut connection = Connection::open(&directory.database)?;
                     let generation =
                         migrations::initialize(&mut connection, &config, &fingerprint)?;
+                    files::cap_database(&connection, config.limits.metadata_max_bytes)?;
                     let recovery = jobs::recover(&mut connection,&config.data_dir)?;
                     Ok((
                         directory,

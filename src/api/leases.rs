@@ -56,11 +56,7 @@ pub(super) async fn result(state: &AppState, request: Control) -> Response {
             let error_code = result.body.get("serverErrorCode").and_then(Value::as_str);
             // Ownership of the uplink belongs to one account; without this an operator
             // cannot tell whose round stopped.
-            let account = state
-                .user
-                .as_ref()
-                .map(|user| user.id.as_str())
-                .unwrap_or("");
+            let account = state.account_id.as_deref().unwrap_or("");
             match error_code {
                 // Losing exclusive uplink ownership is an operational event, not merely
                 // a rejected request: a whole client round stops here.

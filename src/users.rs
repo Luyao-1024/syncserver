@@ -16,6 +16,7 @@ use std::{
 use zeroize::Zeroizing;
 
 pub const SESSION_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub const ADMIN_SESSION_TTL_SECONDS: i64 = 2 * 60 * 60;
 const APPLICATION_ID: i64 = 0x53595541;
 
 /// Account role. Only `admin` may reach the console's administration API; the
@@ -181,6 +182,9 @@ impl Users {
             // They simply become ordinary users that inherit the deployment quota.
             conn.execute_batch("BEGIN IMMEDIATE;ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin'));ALTER TABLE users ADD COLUMN quota_bytes INTEGER CHECK(quota_bytes IS NULL OR (quota_bytes>0 AND quota_bytes<=9223372036854775807));PRAGMA application_id=1398363457;PRAGMA user_version=2;COMMIT;")?;
         }
+        // Existing administrator sessions from an older binary also adopt the cap.
+        conn.execute("UPDATE sessions SET expires_at=MIN(expires_at,?1) WHERE user_id IN (SELECT id FROM users WHERE role='admin')", [now()+ADMIN_SESSION_TTL_SECONDS])?;
+        crate::store::files::cap_database(&conn, 67_108_864)?;
         Ok(Self {
             connection: Mutex::new(conn),
             dummy_hash: hash("non-account dummy password")?,
@@ -270,6 +274,12 @@ impl Users {
         )? != 1
         {
             return Err(invalid("unknown user"));
+        }
+        if role == Role::Admin {
+            tx.execute(
+                "UPDATE sessions SET expires_at=MIN(expires_at,?2) WHERE user_id=?1",
+                params![id, now() + ADMIN_SESSION_TTL_SECONDS],
+            )?;
         }
         if role == Role::User {
             let admins: i64 = tx.query_row(
@@ -368,7 +378,12 @@ impl Users {
         let random = random_bytes()?;
         let token = format!("ss1_{}", URL_SAFE_NO_PAD.encode(random));
         let digest = Sha256::digest(token.as_bytes());
-        let expires = now() + SESSION_TTL_SECONDS;
+        let expires = now()
+            + if user.role.is_admin() {
+                ADMIN_SESSION_TTL_SECONDS
+            } else {
+                SESSION_TTL_SECONDS
+            };
         let mut conn = self.lock()?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let current: bool = tx.query_row(

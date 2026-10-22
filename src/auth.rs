@@ -22,7 +22,9 @@ pub(crate) struct Authority {
     legacy_runtime: OnceLock<Weak<AppState>>,
     contexts: Mutex<HashMap<String, UserCell>>,
     pub passwords: Arc<Semaphore>,
-    attempts: Mutex<HashMap<String, (Instant, u32)>>,
+    pub login_bodies: Arc<Semaphore>,
+    attempts: Mutex<HashMap<(std::net::IpAddr, String), (Instant, u32)>>,
+    sources: Mutex<HashMap<std::net::IpAddr, (Instant, u32)>>,
 }
 impl Authority {
     pub fn new(config: Config, credentials: Credentials, legacy: Store, users: Users) -> Self {
@@ -34,21 +36,43 @@ impl Authority {
             legacy_runtime: OnceLock::new(),
             contexts: Mutex::new(HashMap::new()),
             passwords: Arc::new(Semaphore::new(2)),
+            login_bodies: Arc::new(Semaphore::new(16)),
             attempts: Mutex::new(HashMap::new()),
+            sources: Mutex::new(HashMap::new()),
         }
     }
     pub fn bind_legacy_runtime(&self, state: &Arc<AppState>) {
         let _ = self.legacy_runtime.set(Arc::downgrade(state));
     }
-    pub fn admit_login(&self, name: &str) -> Result<bool> {
-        let mut attempts = self.attempts.lock().map_err(|_| Error::WorkerFailed)?;
-        attempts.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
-        if attempts.len() >= 4096 && !attempts.contains_key(name) {
+    pub fn admit_login(&self, source: std::net::IpAddr) -> Result<bool> {
+        let mut sources = self.sources.lock().map_err(|_| Error::WorkerFailed)?;
+        sources.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
+        if sources.len() >= 4096 && !sources.contains_key(&source) {
             return Ok(false);
         }
-        let entry = attempts
-            .entry(name.to_owned())
-            .or_insert((Instant::now(), 0));
+        let entry = sources.entry(source).or_insert((Instant::now(), 0));
+        entry.1 = entry.1.saturating_add(1);
+        Ok(entry.1 <= 32)
+    }
+    // A failed attempt must never consume a valid password's account-wide quota.
+    // The source admission and Argon2 semaphore still bound password computation.
+    pub fn login_outcome(
+        &self,
+        source: std::net::IpAddr,
+        name: &str,
+        success: bool,
+    ) -> Result<bool> {
+        let mut attempts = self.attempts.lock().map_err(|_| Error::WorkerFailed)?;
+        attempts.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(60));
+        let key = (source, name.to_owned());
+        if success {
+            attempts.remove(&key);
+            return Ok(true);
+        }
+        if attempts.len() >= 4096 && !attempts.contains_key(&key) {
+            return Ok(false);
+        }
+        let entry = attempts.entry(key).or_insert((Instant::now(), 0));
         entry.1 = entry.1.saturating_add(1);
         Ok(entry.1 <= 8)
     }
@@ -58,7 +82,7 @@ impl Authority {
             .await
             .map_err(|_| Error::WorkerFailed)?
     }
-    pub async fn resolve(&self, token: &str) -> Result<Option<Arc<AppState>>> {
+    pub async fn resolve(&self, token: &str) -> Result<Option<(Arc<AppState>, User)>> {
         let users = self.users.clone();
         let secret = zeroize::Zeroizing::new(token.to_owned());
         let user = tokio::task::spawn_blocking(move || users.authenticate(&secret))
@@ -86,8 +110,8 @@ impl Authority {
             .await
             .map_err(|_| Error::WorkerFailed)??;
         Ok(still_valid
-            .filter(|u| Some(&u.id) == state.user.as_ref().map(|u| &u.id))
-            .map(|_| state))
+            .filter(|u| Some(&u.id) == state.account_id.as_ref())
+            .map(|user| (state, user)))
     }
     /// Pushes a new ceiling into an already-open context so an administrator sees
     /// the effect immediately. An account with no open context picks the value up
@@ -156,7 +180,8 @@ impl Authority {
             state.original_downloads = root.original_downloads.clone();
             state.thumbnail_downloads = root.thumbnail_downloads.clone();
         }
-        state.user = Some(user);
+        state.legacy = user.legacy;
+        state.account_id = Some(user.id);
         Ok(Arc::new(state))
     }
     pub async fn shutdown(&self) -> Result<()> {
@@ -168,7 +193,7 @@ impl Authority {
             .filter_map(|cell| cell.get().cloned())
             .collect::<Vec<_>>();
         for state in contexts {
-            if state.user.as_ref().is_some_and(|u| !u.legacy) {
+            if !state.legacy {
                 state.store.shutdown().await?;
             }
         }

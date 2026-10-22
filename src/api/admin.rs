@@ -37,8 +37,8 @@ fn authority(state: &Arc<AppState>) -> Option<&Arc<crate::auth::Authority>> {
     state.authority.as_ref()
 }
 
-fn require_admin(state: &Arc<AppState>) -> Option<User> {
-    let user = state.user.clone()?;
+fn require_admin(current: &super::CurrentUser) -> Option<User> {
+    let user = current.0.clone()?;
     user.role.is_admin().then_some(user)
 }
 
@@ -169,9 +169,9 @@ async fn read_usage(
 
 pub(super) async fn users(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
 ) -> Response {
-    let Some(_actor) = require_admin(&state) else {
+    let Some(_actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -232,10 +232,10 @@ async fn lookup(
 
 pub(super) async fn storage(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(_actor) = require_admin(&state) else {
+    let Some(_actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -261,10 +261,10 @@ pub(super) async fn storage(
 
 pub(super) async fn overview(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     request: Request,
 ) -> Response {
-    let Some(_actor) = require_admin(&state) else {
+    let Some(_actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -476,10 +476,10 @@ fn catalogue_error(error: Error) -> ApiError {
 
 pub(super) async fn create_user(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     request: Request,
 ) -> Response {
-    let Some(actor) = require_admin(&state) else {
+    let Some(actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -527,11 +527,11 @@ struct QuotaRequest {
 
 pub(super) async fn set_quota(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
-    let Some(actor) = require_admin(&state) else {
+    let Some(actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -583,11 +583,11 @@ struct RoleRequest {
 
 pub(super) async fn set_role(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
-    let Some(actor) = require_admin(&state) else {
+    let Some(actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -660,11 +660,11 @@ struct PasswordRequest {
 
 pub(super) async fn set_password(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
-    let Some(actor) = require_admin(&state) else {
+    let Some(actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -710,11 +710,11 @@ pub(super) async fn set_password(
 
 pub(super) async fn set_enabled(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
-    let Some(actor) = require_admin(&state) else {
+    let Some(actor) = require_admin(&current) else {
         return denied();
     };
     let Some(authority) = authority(&root) else {
@@ -769,10 +769,10 @@ pub(super) async fn set_enabled(
 /// endpoint needs masking again.
 pub(super) async fn logs(
     State(root): State<Arc<AppState>>,
-    Extension(state): Extension<Arc<AppState>>,
+    Extension(current): Extension<super::CurrentUser>,
     request: Request,
 ) -> Response {
-    let Some(_actor) = require_admin(&state) else {
+    let Some(_actor) = require_admin(&current) else {
         return denied();
     };
     let params = match parameters(

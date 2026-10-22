@@ -543,12 +543,13 @@ mod tests {
     #[test]
     fn lease_and_session_expiration_release_reservations_before_maintenance() {
         let root = tempfile::tempdir().unwrap();
-        let config = Config::from_pairs([
+        let mut config = Config::from_pairs([
             ("SYNC_DATA_DIR", "/unused/data"),
             ("SYNC_SIGNING_KEY_FILE", "/unused/signing"),
             ("SYNC_USER_STORAGE_QUOTA_BYTES", "10"),
         ])
         .unwrap();
+        config.data_dir = root.path().to_path_buf();
         let mut db = Connection::open(root.path().join("metadata.sqlite")).unwrap();
         let generation = migrations::initialize(&mut db, &config, &[1; 32]).unwrap();
         let codec = TokenCodec::new([1; 32]);

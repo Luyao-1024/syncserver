@@ -560,8 +560,27 @@ async fn login_limits_are_bounded_and_do_not_block_another_accounts_metadata() {
         .send()
         .await
         .unwrap();
-    assert_eq!(limited.status(), 429);
-    assert_eq!(limited.headers()["retry-after"], "60");
+    assert_eq!(limited.status(), 200);
+    // The ninth wrong password is throttled; a valid password is never rejected
+    // because another client consumed the account's failed-attempt allowance.
+    for _ in 0..9 {
+        let _ = app
+            .client
+            .post(format!("{}/v1/auth/login", app.base))
+            .json(&json!({"username":"alice","password":"wrong synthetic password"}))
+            .send()
+            .await
+            .unwrap();
+    }
+    let failed = app
+        .client
+        .post(format!("{}/v1/auth/login", app.base))
+        .json(&json!({"username":"alice","password":"wrong synthetic password"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), 429);
+    assert_eq!(login(&app, "alice").await["user"]["username"], "alice");
     let bob = login(&app, "bob").await;
     capability(&app, bob["accessToken"].as_str().unwrap()).await;
     app.stop().await;

@@ -26,6 +26,7 @@ fn configure(level: LogLevel, persist: LogLevel) -> LogSettings {
         retention_raw_secs: 86_400,
         archive_max_bytes: 1_073_741_824,
         queue_capacity: 1024,
+        database_max_bytes: 268_435_456,
     }
 }
 
@@ -789,4 +790,49 @@ fn an_account_id_survives_without_detail_logging_but_a_record_name_does_not() {
         );
     }
     writer.shutdown().unwrap();
+}
+
+#[test]
+fn log_database_has_an_emergency_storage_cap_without_trimming_recent_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let mut settings = configure(LogLevel::Info, LogLevel::Info);
+    settings.database_max_bytes = 1_048_576;
+    let writer = open(root.path(), &settings);
+    writer.publish(record("retained-first-record", now_ms(), json!({})));
+    writer.flush().unwrap();
+    for batch in 0..16 {
+        for index in 0..100 {
+            writer.publish(record(
+                &format!("entry-{batch}-{index}"),
+                now_ms(),
+                json!({"text":"x".repeat(4096)}),
+            ));
+        }
+        let _ = writer.flush();
+        if writer.stats().write_failures > 0 {
+            break;
+        }
+    }
+    assert!(
+        writer.stats().write_failures > 0,
+        "the storage cap must refuse further growth"
+    );
+    let c = rusqlite::Connection::open(database(root.path())).unwrap();
+    let retained: i64 = c
+        .query_row(
+            "SELECT count(*) FROM log_events WHERE message='retained-first-record'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 1);
+    let pages: i64 = c
+        .pragma_query_value(None, "page_count", |r| r.get(0))
+        .unwrap();
+    let size: i64 = c
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    assert!(pages * size <= 1_048_576);
+    drop(c);
+    let _ = writer.shutdown();
 }

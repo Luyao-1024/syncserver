@@ -12,6 +12,9 @@ use url::{Host, Url};
 pub struct Limits {
     pub max_asset_bytes: u64,
     pub user_storage_quota_bytes: u64,
+    pub user_physical_storage_quota_bytes: u64,
+    pub min_free_disk_bytes: u64,
+    pub metadata_max_bytes: u64,
     pub thumbnail_max_bytes: u64,
     pub upload_concurrency: usize,
     pub download_concurrency: usize,
@@ -27,6 +30,7 @@ pub struct Limits {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub(crate) bind: SocketAddr,
+    pub(crate) trusted_proxy_ips: Vec<std::net::IpAddr>,
     pub(crate) data_dir: PathBuf,
     pub(crate) public_base_url: Url,
     pub(crate) api_key_file: PathBuf,
@@ -39,6 +43,7 @@ pub struct Config {
 
 const KEYS: &[&str] = &[
     "SYNC_BIND",
+    "SYNC_TRUSTED_PROXY_IPS",
     "SYNC_DATA_DIR",
     "SYNC_PUBLIC_BASE_URL",
     "SYNC_API_KEY_FILE",
@@ -47,6 +52,10 @@ const KEYS: &[&str] = &[
     "SYNC_ZONES",
     "SYNC_MAX_ASSET_BYTES",
     "SYNC_USER_STORAGE_QUOTA_BYTES",
+    "SYNC_USER_PHYSICAL_STORAGE_QUOTA_BYTES",
+    "SYNC_MIN_FREE_DISK_BYTES",
+    "SYNC_METADATA_MAX_BYTES",
+    "SYNC_LOG_DATABASE_MAX_BYTES",
     "SYNC_THUMBNAIL_MAX_BYTES",
     "SYNC_UPLOAD_CONCURRENCY",
     "SYNC_DOWNLOAD_CONCURRENCY",
@@ -163,6 +172,12 @@ impl Config {
         let limits = Limits {
             max_asset_bytes: number("SYNC_MAX_ASSET_BYTES", 536870912)?,
             user_storage_quota_bytes: number("SYNC_USER_STORAGE_QUOTA_BYTES", 20_000_000_000)?,
+            user_physical_storage_quota_bytes: number(
+                "SYNC_USER_PHYSICAL_STORAGE_QUOTA_BYTES",
+                40_000_000_000,
+            )?,
+            min_free_disk_bytes: number("SYNC_MIN_FREE_DISK_BYTES", 1_073_741_824)?,
+            metadata_max_bytes: number("SYNC_METADATA_MAX_BYTES", 1_073_741_824)?,
             thumbnail_max_bytes: number("SYNC_THUMBNAIL_MAX_BYTES", 2097152)?,
             upload_concurrency: sized("SYNC_UPLOAD_CONCURRENCY", 2)?,
             download_concurrency: sized("SYNC_DOWNLOAD_CONCURRENCY", 8)?,
@@ -193,6 +208,20 @@ impl Config {
         {
             return Err(Error::Config(
                 "thumbnail limit exceeds 2 MiB, asset size or storage quota overflows SQLite, or total timeout is below idle timeout",
+            ));
+        }
+        if limits.user_physical_storage_quota_bytes > i64::MAX as u64
+            || limits.min_free_disk_bytes > i64::MAX as u64
+            || !(1_048_576..=1_099_511_627_776).contains(&limits.metadata_max_bytes)
+        {
+            return Err(Error::Config(
+                "physical quota, free-space reserve or metadata cap is out of bounds",
+            ));
+        }
+        let database_max_bytes = number("SYNC_LOG_DATABASE_MAX_BYTES", 268_435_456)?;
+        if !(1_048_576..=1_099_511_627_776).contains(&database_max_bytes) {
+            return Err(Error::Config(
+                "log database cap must be between 1 MiB and 1 TiB",
             ));
         }
         let level = LogLevel::parse(&value("SYNC_LOG_LEVEL", "info"))?;
@@ -233,9 +262,18 @@ impl Config {
             retention_raw_secs,
             archive_max_bytes,
             queue_capacity,
+            database_max_bytes,
         };
         Ok(Self {
             bind,
+            trusted_proxy_ips: value("SYNC_TRUSTED_PROXY_IPS", "")
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    s.parse()
+                        .map_err(|_| Error::Config("trusted proxy addresses must be literal IPs"))
+                })
+                .collect::<Result<Vec<_>>>()?,
             data_dir: required("SYNC_DATA_DIR")?,
             public_base_url,
             api_key_file: values
@@ -346,6 +384,7 @@ pub struct LogSettings {
     pub retention_raw_secs: u64,
     pub archive_max_bytes: u64,
     pub queue_capacity: usize,
+    pub database_max_bytes: u64,
 }
 
 fn safe_name(value: &str) -> bool {

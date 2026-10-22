@@ -80,3 +80,8 @@ M1 没有 upload_sessions、publish_intents 或 Published 资产；恢复仅检�
 ## 上传配额与恢复
 
 [每用户配额](../contracts/storage-quota.md)按当前未删除文件的资源引用计算逻辑大小；相同对象的多个引用分别计量，历史和未引用对象不计入用户配额。申请在事务内预留逻辑增长，发布只结束传输预留；记录创建/复制/更新的事务最终校验逻辑增长并与版本、变化和 receipt 一同提交，atomic 超额整批回滚、nonatomic 回滚失败子项。失锁/重启沿用既有恢复与预留释放协议。删除释放逻辑配额，不删除历史对象；降低上限允许等大小更新、缩小及元数据变更。
+
+
+## 2026-10-23 安全修复
+
+本轮不新增媒体 schema 或重置 generation；角色改为请求身份，上传按元数据事务检查独立物理预算，SQLite 使用物理增长上限，现有照片与历史不自动裁剪。契约与回归项见[安全修复实施记录](security-remediation.md)、[认证契约](../contracts/authentication.md)和[配额契约](../contracts/storage-quota.md)。实际执行结果另列，不以本段代表部署完成。

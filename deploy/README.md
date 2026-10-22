@@ -4,6 +4,8 @@
 
 本目录提供首次部署配置；不自动修改原 WebDAV 或用户云服务器。基本实现/验证范围见[服务端说明](../docs/design/v0.1-server.md)。服务启动必须持有数据目录独占锁，只允许一个进程管理一个目录。
 
+本地仓库的开发与 release 启动/重启统一使用 `./start.sh dev` / `./start.sh release`，见 [本地启动说明](../README.md)。以下 systemd/容器为独立部署入口，其实例由对应服务管理器重启。
+
 ## systemd
 
 1. 在目标 Linux 主机 `cargo build --release --locked --bin syncserver`，安装二进制至 `/usr/local/bin/syncserver`。
@@ -61,3 +63,10 @@ sudo -u syncserver sh -c 'set -a; . /etc/syncserver/server.env; set +a; syncserv
 ## 用户空间上限
 
 环境模板显式设置 `SYNC_USER_STORAGE_QUOTA_BYTES=20000000000`（每用户 20 GB，十进制）；缺省也使用此值，修改后重启服务。用户用现有登录 Bearer 请求 `GET /v1/storage` 查询总额/已用/预留/可用空间。该配置限制每用户全部 zone 的资源总额，不替代单文件或 Nginx 请求正文上限，也不限制 SQLite、日志和暂存的磁盘开销。按当前文件的逻辑大小计量，相同内容的多个独立文件分别计费；删除释放逻辑配额，历史及未引用对象不计入用户已用空间，见[完整契约](../docs/contracts/storage-quota.md)。本地模板变更不代表线上已经部署。
+
+
+## 2026-10-23 本机隔离服务与 frp
+
+当前照片后端以本机 `syncserver-local.service` 运行；阿里云只保留 Nginx/frp。使用专用服务用户、只读程序/密钥、唯一可写数据目录及最大 64 GiB 的独立稀疏数据卷；日志 SQLite、元数据、认证库和 journald 均有物理预算。公网只复用原有 HTTPS 443，7000/8790 只绑定阿里云回环。
+
+重启已安装版本使用 `systemctl restart syncserver-local.service`；源码更新需重新构建/安装 release。具体数据位置、回滚边界、实际验证和密码交付位置见[安全修复实施记录](../docs/design/security-remediation.md)。本机开发仍用 start.sh，systemd 安装服务使用自身生命周期管理。

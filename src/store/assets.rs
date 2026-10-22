@@ -248,6 +248,11 @@ fn reserve(
                 })?;
         }
         storage::ensure_capacity(&tx, guard, additional)?;
+        let physical = request.tokens.iter().try_fold(0u64, |sum, token| {
+            sum.checked_add(token.options.expected_size)
+                .ok_or(Error::RecoveryFailed)
+        })?;
+        ensure_physical_capacity(&tx, guard, physical)?;
         let mut ids = Vec::new();
         let expires = crate::jobs::now_ms()? + SESSION_TTL_MS;
         for token in &request.tokens {
@@ -342,6 +347,11 @@ pub(crate) fn execute(
                     Failure::new(409, code, "Upload session cannot accept another body").into(),
                 );
             }
+            super::files::check_free_space(
+                &guard.config.data_dir,
+                s.expected_size,
+                guard.config.limits.min_free_disk_bytes,
+            )?;
             tx.execute("UPDATE upload_sessions SET state='Receiving',staging_name=?1 WHERE namespace_id=1 AND session_id=?2",params![staging,id.to_string()])?;
             tx.commit()?;
             s.state = "Receiving".into();
@@ -612,6 +622,48 @@ pub(crate) fn render_bounded(
         .ok_or_else(Failure::limit)?;
     render(db, value, guard, &mut remaining)?;
     Ok(crate::domain::records::MAX_RESULT_BYTES - remaining)
+}
+
+fn ensure_physical_capacity(db: &Connection, guard: &Guard<'_>, additional: u64) -> Result<()> {
+    let objects: i64 = db.query_row(
+        "SELECT COALESCE(SUM(size),0) FROM assets WHERE namespace_id=1",
+        [],
+        |r| r.get(0),
+    )?;
+    // Receiving bodies stay charged even after losing a lease, until cleanup settles.
+    let pending: i64 = db.query_row("SELECT COALESCE(SUM(s.expected_size),0) FROM upload_sessions s LEFT JOIN upload_lease l ON l.namespace_id=s.namespace_id AND l.lease_id=s.lease_id AND l.fence=s.fence WHERE s.namespace_id=1 AND (s.state IN('Receiving','PublishPrepared') OR (s.state='Reserved' AND l.lease_id IS NOT NULL AND l.deadline_tick_ms>?1 AND s.expires_at_ms>?2))", params![guard.clock.tick()?,crate::jobs::now_ms()?], |r| r.get(0))?;
+    let mut occupied = u128::try_from(objects).map_err(|_| Error::RecoveryFailed)?
+        + u128::try_from(pending).map_err(|_| Error::RecoveryFailed)?;
+    // Failed publication may retain a real quarantined object without an assets row.
+    // Only stat those exceptional identities; never open or hash an object body.
+    let mut statement = db.prepare("SELECT json_extract(p.asset_json,'$.sha256'), MAX(json_extract(p.asset_json,'$.size')) FROM publish_intents p WHERE p.namespace_id=1 AND p.state='Quarantined' AND NOT EXISTS(SELECT 1 FROM assets a WHERE a.namespace_id=p.namespace_id AND a.sha256=json_extract(p.asset_json,'$.sha256')) GROUP BY json_extract(p.asset_json,'$.sha256')")?;
+    for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (sha, size) = row?;
+        let size = u64::try_from(size).map_err(|_| Error::RecoveryFailed)?;
+        if !crate::domain::assets::digest(&sha) {
+            return Err(Error::RecoveryFailed);
+        }
+        match std::fs::symlink_metadata(crate::assets::object(&guard.config.data_dir, &sha)) {
+            Ok(meta) if meta.is_file() && meta.len() == size => occupied += u128::from(size),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(Error::RecoveryFailed),
+        }
+    }
+    if occupied + u128::from(additional)
+        > u128::from(guard.config.limits.user_physical_storage_quota_bytes)
+    {
+        return Err(Failure::new(
+            507,
+            "PHYSICAL_STORAGE_QUOTA_EXCEEDED",
+            "Account physical storage capacity reached",
+        )
+        .into());
+    }
+    super::files::check_free_space(
+        &guard.config.data_dir,
+        additional,
+        guard.config.limits.min_free_disk_bytes,
+    )
 }
 
 #[cfg(test)]

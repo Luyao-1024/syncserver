@@ -182,3 +182,8 @@ Tests:
 - PASS `git diff --check`。
 
 HTTP/进程测试使用获准监听 loopback 端口的环境。此次分类扩展的本地提交状态以 Git 记录为准，尚未推送或部署，远端 CI 未运行。
+
+
+## 2026-10-23 安全修复
+
+本轮不新增媒体 schema 或重置 generation；角色改为请求身份，上传按元数据事务检查独立物理预算，SQLite 使用物理增长上限，现有照片与历史不自动裁剪。契约与回归项见[安全修复实施记录](security-remediation.md)、[认证契约](../contracts/authentication.md)和[配额契约](../contracts/storage-quota.md)。实际执行结果另列，不以本段代表部署完成。

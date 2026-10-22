@@ -384,7 +384,7 @@ async fn finish_upload(
             tracing::info!(
                 // The account is what makes this attributable: the asset id alone says
                 // which object, not whose library it landed in.
-                user_id = state.user.as_ref().map(|user| user.id.as_str()).unwrap_or(""),
+                user_id = state.account_id.as_deref().unwrap_or(""),
                 upload_id = %session_id,
                 asset_id = %asset_id,
                 asset_role = claims.role.as_str(),
@@ -467,7 +467,7 @@ async fn download_inner(
 ) -> Result<Response, ApiError> {
     let params = parameters(&request)?;
     let role = role(&params)?;
-    if state.user.is_some() {
+    if state.account_id.is_some() {
         capability(&state, &request).map_err(|_| {
             ApiError::new(
                 StatusCode::UNAUTHORIZED,

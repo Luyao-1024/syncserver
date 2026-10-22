@@ -71,11 +71,7 @@ pub(super) async fn modify(
                 level,
                 // `record_operations` is the count; the account is what makes it
                 // answerable as "how much did this person change".
-                user_id = state
-                    .user
-                    .as_ref()
-                    .map(|user| user.id.as_str())
-                    .unwrap_or(""),
+                user_id = state.account_id.as_deref().unwrap_or(""),
                 record_operations = planned as u64,
                 idempotent_replay,
                 lease_bound,

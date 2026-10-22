@@ -119,6 +119,7 @@ pub struct LogStats {
     pub archive_segments: u64,
     pub archive_bytes: u64,
     pub archive_max_bytes: u64,
+    pub database_max_bytes: u64,
     pub trimmed_segments: u64,
     pub last_archive_ts_ms: i64,
 }
@@ -210,6 +211,7 @@ impl Writer {
             archive_segments: self.counters.archive_segments.load(Ordering::Relaxed),
             archive_bytes: self.counters.archive_bytes.load(Ordering::Relaxed),
             archive_max_bytes: self.settings.archive_max_bytes,
+            database_max_bytes: self.settings.database_max_bytes,
             trimmed_segments: self.counters.trimmed_segments.load(Ordering::Relaxed),
             last_archive_ts_ms: self.counters.last_archive_ts_ms.load(Ordering::Relaxed),
         }
@@ -447,6 +449,7 @@ impl Session {
             store_setting(&connection, "retention_raw_secs", settings)?;
             store_setting(&connection, "archive_max_bytes", settings)?;
         }
+        files::cap_database(&connection, settings.database_max_bytes)?;
         Ok(Self { connection })
     }
 
